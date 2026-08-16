@@ -57,6 +57,18 @@ class NightreignWorld(World):
 
     active_locations: list[str]
 
+    def generate_early(self) -> None:
+        # This tracker has no item/location gating at all (topology_present
+        # = False, every location reachable from the start), so there's no
+        # CollectionState-derived condition that could reflect real
+        # progress - the actual goal ("every included character x Nightlord
+        # combination checked") can only be observed live, by the client,
+        # via ctx.missing_locations (see client.py's _maybe_declare_goal).
+        # Set explicitly (rather than relying on the silent BaseClasses
+        # default of the same value) so that choice is visible in code, per
+        # docs/adding games.md's "a set completion condition" requirement.
+        self.multiworld.completion_condition[self.player] = lambda state: True
+
     def create_regions(self) -> None:
         included_characters = self.options.included_characters.value
         included_nightlords = self.options.included_nightlords.value
@@ -81,7 +93,9 @@ class NightreignWorld(World):
         self.multiworld.regions.append(menu)
 
     def create_items(self) -> None:
-        self.multiworld.itempool += [self.create_filler() for _ in range(len(self.active_locations))]
+        self.multiworld.itempool += [
+            self.create_filler() for _ in range(len(self.active_locations))
+        ]
 
     def create_item(self, name: str) -> NightreignItem:
         data = item_table[name]

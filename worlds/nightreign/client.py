@@ -20,6 +20,7 @@ import colorama
 
 import Utils
 from CommonClient import ClientCommandProcessor, CommonContext, get_base_parser, gui_enabled, server_loop
+from NetUtils import ClientStatus
 
 from .Locations import location_name, location_name_to_id
 from .memory_reader import NightreignMemoryReader, PointerNotFoundError
@@ -94,6 +95,28 @@ class NightreignContext(CommonContext):
             # what's still in ctx.missing_locations, so this is always safe.
             if self.checked_location_ids:
                 asyncio.create_task(self.check_locations(self.checked_location_ids))
+            asyncio.create_task(self._maybe_declare_goal())
+
+        if cmd == "RoomUpdate":
+            # ctx.missing_locations is updated (by the base on_package
+            # handling, before this hook runs) from the "checked_locations"
+            # field on this same packet - this is the correct place to
+            # notice "nothing left to check", not right after our own send,
+            # since the server confirms via this packet rather than synchronously.
+            asyncio.create_task(self._maybe_declare_goal())
+
+    async def _maybe_declare_goal(self) -> None:
+        # This tracker has no item/logic gating (topology_present = False,
+        # every location is reachable from the start), so there's no
+        # CollectionState-based completion_condition that could mean
+        # anything here - "goal" can only be observed client-side, as
+        # "no locations left to check for this slot's included
+        # characters/Nightlords". See docs/adding games.md's "Hard
+        # Requirements": a client must send a StatusUpdate on goal completion.
+        if not self.finished_game and self.slot is not None and not self.missing_locations:
+            self.finished_game = True
+            await self.send_msgs([{"cmd": "StatusUpdate", "status": ClientStatus.CLIENT_GOAL}])
+            logger.info("All included locations checked - goal complete!")
 
     # --- Per-run local state file ---
     #

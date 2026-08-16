@@ -35,3 +35,8 @@ ever can't confidently identify which Nightlord you just defeated, it will **tel
 see a message like `boss_id 72 not found - please report this to the mod owner with your Expedition's Nightlord`.
 If you see this, please report it (with the Nightlord you actually fought) so the roster can be corrected. This is
 by design: an early alpha should surface uncertainty rather than silently mis-record a check.
+
+## Credits
+
+Thanks to **thefifthmatt**, for their work on Elden Ring Nightreign randomization, which laid groundwork this
+project builds on.

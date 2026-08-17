@@ -2,7 +2,7 @@ from typing import NamedTuple
 
 from BaseClasses import Item, ItemClassification
 
-from .game_data import NIGHTLORDS
+from .game_data import ACCESS_NIGHTLORDS, NIGHTLORDS
 
 
 class NightreignItem(Item):
@@ -16,14 +16,24 @@ class ItemData(NamedTuple):
 
 base_id = 3939000
 
-# One flavorful filler item per Nightlord - no in-game effect in v1 (tracker
-# only; see the project plan's scope decision to ship reads-only now and
-# defer real item/character gating to a separate write-side research spike).
-# create_items() creates enough copies of these to match the location count.
+# One flavorful filler item per Nightlord, plus one progression "Access" item
+# per Nightlord that needs a game-side unlock (everything but Tricephalos).
+# Trophy codes stay at base_id+0..7 so existing seeds' item ids don't shift;
+# Access items append at base_id+8.. with no collisions.
 item_table = {
     f"{name} Trophy": ItemData(base_id + i)
     for i, name in enumerate(NIGHTLORDS)
+} | {
+    f"{name} Access": ItemData(base_id + len(NIGHTLORDS) + i, ItemClassification.progression)
+    for i, name in enumerate(ACCESS_NIGHTLORDS)
 }
+
+# get_filler_item_name() must only ever choose from this, not item_table's
+# full key set - once item_table holds progression Access items, choosing
+# from all of it would let AP's own pool-repair logic (start_inventory_from_pool
+# depletion, plando swaps) hand out an Access item as "random filler",
+# silently breaking gating for whoever receives it.
+FILLER_ITEM_NAMES = [f"{name} Trophy" for name in NIGHTLORDS]
 
 item_name_to_id = {name: data.code for name, data in item_table.items()}
 lookup_id_to_name = {data.code: name for name, data in item_table.items()}

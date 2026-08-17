@@ -1,9 +1,12 @@
 """Archipelago client for Elden Ring Nightreign.
 
-v1 is a read-only tracker (see the project plan's scope decision): polls the
-running game via memory_reader.py and sends a location check on each
-detected Nightlord win. Received items have no in-game effect yet - the base
-CommonContext/CLI/GUI machinery already logs them, nothing extra needed here.
+Polls the running game via memory_reader.py and sends a location check on
+each detected Nightlord win. When the gate_boss_access option is on for this
+slot (learned from slot_data on connect), received Access items are synced
+into the game via memory_writer.py's SetEventFlag port, gating which
+Nightlords are actually selectable. With that option off, received items
+have no in-game effect - the base CommonContext/CLI/GUI machinery just logs
+them, same as before this was added.
 """
 
 from __future__ import annotations
@@ -22,8 +25,12 @@ import Utils
 from CommonClient import ClientCommandProcessor, CommonContext, get_base_parser, gui_enabled, server_loop
 from NetUtils import ClientStatus
 
+from .game_data import ACCESS_ITEM_EVENT_FLAGS, ACCESS_NIGHTLORDS
+from .Items import lookup_id_to_name
 from .Locations import location_name, location_name_to_id
 from .memory_reader import NightreignMemoryReader, PointerNotFoundError
+from .memory_writer import NightreignMemoryWriter
+from .overlay import NightreignOverlay
 
 logger = logging.getLogger("NightreignClient")
 
@@ -57,6 +64,10 @@ class NightreignContext(CommonContext):
     run_state_path: Optional[str]
     checked_location_ids: set
 
+    gate_boss_access: bool
+    writer: Optional[NightreignMemoryWriter]
+    overlay: Optional[NightreignOverlay]
+
     _last_pulse: Optional[int]
 
     def __init__(self, server_address: Optional[str], password: Optional[str]):
@@ -65,6 +76,9 @@ class NightreignContext(CommonContext):
         self.poll_task = None
         self.run_state_path = None
         self.checked_location_ids = set()
+        self.gate_boss_access = False
+        self.writer = None
+        self.overlay = None
         self._last_pulse = None
 
     def run_gui(self):
@@ -88,6 +102,12 @@ class NightreignContext(CommonContext):
             self.seed_name = args["seed_name"]
 
         if cmd == "Connected":
+            # CommonContext doesn't assign slot_data itself even though
+            # want_slot_data defaults to True - every game client that needs
+            # it sets this itself here.
+            self.slot_data = args.get("slot_data", {}) or {}
+            self.gate_boss_access = bool(self.slot_data.get("gate_boss_access", False))
+
             self._open_run_state()
             # Replay anything our local state already thinks is checked, in
             # case the server and our local record ever drifted (e.g. a
@@ -96,6 +116,13 @@ class NightreignContext(CommonContext):
             if self.checked_location_ids:
                 asyncio.create_task(self.check_locations(self.checked_location_ids))
             asyncio.create_task(self._maybe_declare_goal())
+            # In case items were already waiting (e.g. a reconnect) and the
+            # game is already attached from a prior connection.
+            asyncio.create_task(self._sync_event_flags())
+
+        if cmd == "ReceivedItems":
+            if self.gate_boss_access:
+                asyncio.create_task(self._sync_event_flags())
 
         if cmd == "RoomUpdate":
             # ctx.missing_locations is updated (by the base on_package
@@ -117,6 +144,40 @@ class NightreignContext(CommonContext):
             self.finished_game = True
             await self.send_msgs([{"cmd": "StatusUpdate", "status": ClientStatus.CLIENT_GOAL}])
             logger.info("All included locations checked - goal complete!")
+
+    # --- Boss-access gating (write path) ---
+    #
+    # Off unless slot_data says gate_boss_access is on for this slot. Firing
+    # SetEventFlag(110) for any one of the 6 secondary-boss Access items
+    # necessarily reveals all 6 in the game's own menu (that flag is
+    # all-or-nothing - see game_data.py) - overlay.py is what shows the
+    # player which of those are actually AP-owned.
+
+    def _owned_item_names(self) -> set:
+        return {lookup_id_to_name.get(i.item) for i in self.items_received}
+
+    async def _sync_event_flags(self) -> None:
+        if not self.gate_boss_access or self.writer is None:
+            return
+        owned_names = self._owned_item_names()
+        needed_flags = {flag for name, flag in ACCESS_ITEM_EVENT_FLAGS.items() if name in owned_names}
+        if not needed_flags:
+            return
+        loop = asyncio.get_running_loop()
+        for flag in needed_flags:
+            ok = await loop.run_in_executor(None, self.writer.set_event_flag, flag, True)
+            if not ok:
+                logger.warning(f"SetEventFlag({flag}, 1) skipped - game not ready, will retry on next sync.")
+
+    def _try_build_writer(self) -> None:
+        try:
+            ptr_slot, base_a_addr = self.reader.resolve_event_flag_targets()
+        except PointerNotFoundError as e:
+            logger.error(f"Boss-gating write path unavailable ({e}) - disabling gating this "
+                         f"session, the read-only tracker is unaffected.")
+            self.gate_boss_access = False
+            return
+        self.writer = NightreignMemoryWriter(self.reader.pm, ptr_slot, base_a_addr)
 
     # --- Per-run local state file ---
     #
@@ -185,9 +246,18 @@ class NightreignContext(CommonContext):
         while True:
             try:
                 if not self.reader.connected:
+                    # A stale writer holds addresses from a now-dead process handle - don't let
+                    # the next _sync_event_flags() reuse it after a fresh connect rebuilds it.
+                    self.writer = None
                     try:
                         if self.reader.connect():
                             logger.info("Connected to nightreign.exe")
+                            if self.gate_boss_access:
+                                self._try_build_writer()
+                                asyncio.create_task(self._sync_event_flags())
+                                if self.writer is not None and self.overlay is None:
+                                    self.overlay = NightreignOverlay(self.reader.pm.process_id)
+                                    self.overlay.start()
                         else:
                             await asyncio.sleep(RECONNECT_INTERVAL)
                             continue
@@ -202,6 +272,13 @@ class NightreignContext(CommonContext):
                     await self._handle_win()
                 if pulse is not None:
                     self._last_pulse = pulse
+
+                if self.gate_boss_access and self.overlay is not None:
+                    owned_names = self._owned_item_names()
+                    locked_names = [
+                        name for name in ACCESS_NIGHTLORDS if f"{name} Access" not in owned_names
+                    ]
+                    self.overlay.state.update(bool(self.reader.read_hub_state()), locked_names)
             except Exception:
                 logger.exception("Error in Nightreign poll loop")
             await asyncio.sleep(POLL_INTERVAL)

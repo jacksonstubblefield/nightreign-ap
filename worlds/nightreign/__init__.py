@@ -2,8 +2,8 @@ from BaseClasses import Region, Tutorial
 from worlds.AutoWorld import World, WebWorld
 from worlds.LauncherComponents import Component, Type, components, launch_subprocess
 
-from .game_data import CHARACTERS, NIGHTLORDS
-from .Items import NightreignItem, item_name_to_id, item_table
+from .game_data import ACCESS_NIGHTLORDS, CHARACTERS, NIGHTLORDS
+from .Items import FILLER_ITEM_NAMES, NightreignItem, item_name_to_id, item_table
 from .Locations import NightreignLocation, location_name, location_name_to_id
 from .Options import NightreignOptions
 
@@ -37,10 +37,11 @@ class NightreignWeb(WebWorld):
 class NightreignWorld(World):
     """
     Elden Ring Nightreign is a co-op roguelike action game from FromSoftware.
-    This is a tracker-only integration for v1: location checks are "defeat
-    Nightlord X as character Y", detected via read-only game memory polling.
-    The game itself is not modified or gated - received items are flavorful
-    and have no in-game effect.
+    Location checks are "defeat Nightlord X as character Y", detected via
+    read-only game memory polling. With the gate_boss_access option enabled,
+    Nightlords beyond Tricephalos are also gated behind receiving their
+    Access item, written into the running game process; otherwise received
+    items are flavorful and have no in-game effect.
     """
 
     game = "Elden Ring Nightreign"
@@ -93,13 +94,32 @@ class NightreignWorld(World):
         self.multiworld.regions.append(menu)
 
     def create_items(self) -> None:
-        self.multiworld.itempool += [
-            self.create_filler() for _ in range(len(self.active_locations))
-        ]
+        if not self.active_locations:
+            return
+
+        access_names = []
+        if self.options.gate_boss_access:
+            included_nightlords = self.options.included_nightlords.value
+            access_names = [
+                f"{name} Access" for name in ACCESS_NIGHTLORDS if name in included_nightlords
+            ]
+
+        self.multiworld.itempool += [self.create_item(name) for name in access_names]
+
+        # access_names is always <= active_locations: location count is
+        # |included_characters| * |included_nightlords|, which is at least
+        # |included_nightlords| (and therefore at least len(access_names))
+        # whenever active_locations is non-empty, i.e. at least one
+        # character is included.
+        filler_count = len(self.active_locations) - len(access_names)
+        self.multiworld.itempool += [self.create_filler() for _ in range(filler_count)]
 
     def create_item(self, name: str) -> NightreignItem:
         data = item_table[name]
         return NightreignItem(name, data.classification, data.code, self.player)
 
     def get_filler_item_name(self) -> str:
-        return self.random.choice(list(item_table.keys()))
+        return self.random.choice(FILLER_ITEM_NAMES)
+
+    def fill_slot_data(self) -> dict:
+        return {"gate_boss_access": bool(self.options.gate_boss_access)}

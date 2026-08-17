@@ -56,3 +56,20 @@ def nightlord_roster() -> list:
 
 
 NIGHTLORDS = nightlord_roster()
+
+# Nightlords that need an AP "access" item - everything except Tricephalos,
+# which is always available in a fresh save with no flag write needed.
+ACCESS_NIGHTLORDS = [name for name in NIGHTLORDS if name != "Tricephalos"]
+
+# EventFlag ids, confirmed live via Cheat Engine against the game's own
+# EventFlagBaseA function: SetEventFlag(110, 1) reveals all 6 secondary
+# Nightlords as one atomic batch (no finer per-boss flag exists), while
+# SetEventFlag(115, 1) separately reveals Night Aspect. See memory_writer.py
+# for how these get fired, and the project notes for how they were found.
+EVENT_FLAG_SECONDARY_BOSSES = 110
+EVENT_FLAG_NIGHT_ASPECT = 115
+
+ACCESS_ITEM_EVENT_FLAGS = {
+    f"{name} Access": (EVENT_FLAG_NIGHT_ASPECT if name == "Night Aspect" else EVENT_FLAG_SECONDARY_BOSSES)
+    for name in ACCESS_NIGHTLORDS
+}

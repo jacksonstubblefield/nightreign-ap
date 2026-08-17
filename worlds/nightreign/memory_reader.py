@@ -60,6 +60,14 @@ PROCESS_NAME = "nightreign.exe"
 GAMEMAN_AOB = "48 8B 05 ?? ?? ?? ?? 83 B8 ?? ?? ?? ?? 00 ?? ?? ?? ?? ?? ?? 48 8D 4C 24"
 GAMEDATAMAN_AOB = "48 8B 0D ?? ?? ?? ?? F3 48 0F 2C C0"
 
+# EventFlagBaseA / EventFlag - the boss-unlock write path (see memory_writer.py). From the CE
+# table's "Hexinton Events" script, confirmed live: EventFlagBaseA(EventFlag_value, flag, on) sets
+# the given EventFlag. Resolved lazily via resolve_event_flag_targets(), NOT inside connect()
+# alongside GAMEMAN_AOB/GAMEDATAMAN_AOB - a future patch that only breaks these two AOBs must not
+# take down the read-only tracker for players who never opted into write access.
+EVENTFLAG_PTR_AOB = "48 8B 1D ?? ?? ?? ?? 49 8B F0 48 8B F9"
+EVENTFLAG_BASE_A_AOB = "48 89 5C 24 08 44 8B 49 1C 44"
+
 # GameMan-relative offsets.
 HUB_FLAG_OFFSET = 0xB40          # bit 0x10000 set => not in an active run
 BOSS_ID_OFFSET = 0xB50           # small clean int, +~10 per boss, drifts +/-3
@@ -199,6 +207,29 @@ class NightreignMemoryReader:
             raise PointerNotFoundError(f"AOB not found (build/version likely changed): {aob}")
         disp = struct.unpack("<i", pm.read_bytes(match_addr + 3, 4))[0]
         return match_addr + 7 + disp
+
+    def _resolve_function_address(self, pm: pymem.Pymem, aob: str) -> int:
+        """Like _resolve_pointer_slot, but for a code address the AOB scan itself already
+        resolves (a callable entry point), not a data pointer slot that needs dereferencing."""
+        pattern = _aob_to_regex_bytes(aob)
+        module = pymem.process.module_from_name(pm.process_handle, self.process_name)
+        match_addr = pymem.pattern.pattern_scan_module(
+            pm.process_handle, module, pattern, check_memory_protection=False
+        )
+        if match_addr is None:
+            raise PointerNotFoundError(f"AOB not found (build/version likely changed): {aob}")
+        return match_addr
+
+    def resolve_event_flag_targets(self) -> tuple[int, int]:
+        """Resolves (eventflag_ptr_slot, eventflag_base_a_addr) for memory_writer.py's
+        NightreignMemoryWriter. Call only when write access is actually wanted (see the AOB
+        constants' comment above) - raises PointerNotFoundError if either AOB can't be found,
+        same convention as connect()."""
+        if not self.connected:
+            raise PointerNotFoundError("not connected - call connect() first")
+        ptr_slot = self._resolve_pointer_slot(self.pm, EVENTFLAG_PTR_AOB)
+        base_a_addr = self._resolve_function_address(self.pm, EVENTFLAG_BASE_A_AOB)
+        return ptr_slot, base_a_addr
 
     def _safe_read_qword(self, address: int) -> Optional[int]:
         try:

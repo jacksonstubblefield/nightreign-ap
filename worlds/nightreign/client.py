@@ -25,9 +25,9 @@ import Utils
 from CommonClient import ClientCommandProcessor, CommonContext, get_base_parser, gui_enabled, server_loop
 from NetUtils import ClientStatus
 
-from .game_data import ACCESS_ITEM_EVENT_FLAGS, ACCESS_NIGHTLORDS
+from .game_data import ACCESS_ITEM_EVENT_FLAGS, ACCESS_NIGHTLORDS, starting_free_nightlords
 from .Items import lookup_id_to_name
-from .Locations import location_name, location_name_to_id
+from .Locations import location_name, location_name_boss_only, location_name_to_id
 from .memory_reader import NightreignMemoryReader, PointerNotFoundError
 from .memory_writer import NightreignMemoryWriter
 from .overlay import NightreignOverlay
@@ -65,6 +65,8 @@ class NightreignContext(CommonContext):
     checked_location_ids: set
 
     gate_boss_access: bool
+    freed_nightlords: set
+    per_character_checks: bool
     writer: Optional[NightreignMemoryWriter]
     overlay: Optional[NightreignOverlay]
 
@@ -77,6 +79,8 @@ class NightreignContext(CommonContext):
         self.run_state_path = None
         self.checked_location_ids = set()
         self.gate_boss_access = False
+        self.freed_nightlords = set()
+        self.per_character_checks = False
         self.writer = None
         self.overlay = None
         self._last_pulse = None
@@ -107,6 +111,10 @@ class NightreignContext(CommonContext):
             # it sets this itself here.
             self.slot_data = args.get("slot_data", {}) or {}
             self.gate_boss_access = bool(self.slot_data.get("gate_boss_access", False))
+            self.freed_nightlords = set(
+                starting_free_nightlords(self.slot_data.get("starting_boss", "Tricephalos"))
+            )
+            self.per_character_checks = self.slot_data.get("check_granularity", "boss") == "boss_and_character"
 
             self._open_run_state()
             # Replay anything our local state already thinks is checked, in
@@ -154,7 +162,14 @@ class NightreignContext(CommonContext):
     # player which of those are actually AP-owned.
 
     def _owned_item_names(self) -> set:
-        return {lookup_id_to_name.get(i.item) for i in self.items_received}
+        # freed_nightlords (from the starting_boss option) are stitched in as
+        # synthetic "X Access" entries so every downstream consumer of this
+        # set - flag-firing and the overlay's locked/unlocked display - treats
+        # them exactly like an already-received Access item, with no separate
+        # code path needed.
+        owned = {lookup_id_to_name.get(i.item) for i in self.items_received}
+        owned |= {f"{name} Access" for name in self.freed_nightlords}
+        return owned
 
     async def _sync_event_flags(self) -> None:
         if not self.gate_boss_access or self.writer is None:
@@ -288,7 +303,7 @@ class NightreignContext(CommonContext):
         character_name = self.reader.read_character_class_name()
         timestamp = datetime.now(timezone.utc).isoformat()
 
-        if character_name is None:
+        if self.per_character_checks and character_name is None:
             logger.warning("Detected a win, but couldn't read the character class - skipping this check.")
             return
 
@@ -305,10 +320,10 @@ class NightreignContext(CommonContext):
             })
             return
 
-        name = location_name(character_name, boss.name)
+        name = location_name(character_name, boss.name) if self.per_character_checks else location_name_boss_only(boss.name)
         location_id = location_name_to_id.get(name)
         if location_id is None:
-            # Character not in this player's included_characters/included_nightlords - nothing to send.
+            # Not in this player's included_characters/included_nightlords - nothing to send.
             logger.info(f"Win detected ({name}) but that location isn't in this slot's options - not sending.")
             return
 

@@ -73,3 +73,18 @@ ACCESS_ITEM_EVENT_FLAGS = {
     f"{name} Access": (EVENT_FLAG_NIGHT_ASPECT if name == "Night Aspect" else EVENT_FLAG_SECONDARY_BOSSES)
     for name in ACCESS_NIGHTLORDS
 }
+
+
+def starting_free_nightlords(starting_boss: str) -> list:
+    """Every Nightlord that ends up unlocked for free because of a
+    `starting_boss` choice - normally just that one boss, but if it's one of
+    the 6 secondary Nightlords sharing EVENT_FLAG_SECONDARY_BOSSES, all 6
+    come along with it, since the game has no finer-grained flag to unlock
+    just one (see EVENT_FLAG_SECONDARY_BOSSES above). Tricephalos is already
+    free regardless of this choice (see ACCESS_NIGHTLORDS), so choosing it
+    here is a no-op read - not the only source of truth for what's unlocked.
+    """
+    if starting_boss not in ACCESS_NIGHTLORDS:
+        return [starting_boss]
+    flag = ACCESS_ITEM_EVENT_FLAGS[f"{starting_boss} Access"]
+    return [name for name in ACCESS_NIGHTLORDS if ACCESS_ITEM_EVENT_FLAGS[f"{name} Access"] == flag]

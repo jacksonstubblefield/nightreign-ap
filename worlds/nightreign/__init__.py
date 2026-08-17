@@ -2,9 +2,9 @@ from BaseClasses import Region, Tutorial
 from worlds.AutoWorld import World, WebWorld
 from worlds.LauncherComponents import Component, Type, components, launch_subprocess
 
-from .game_data import ACCESS_NIGHTLORDS, CHARACTERS, NIGHTLORDS
+from .game_data import ACCESS_NIGHTLORDS, CHARACTERS, NIGHTLORDS, starting_free_nightlords
 from .Items import FILLER_ITEM_NAMES, NightreignItem, item_name_to_id, item_table
-from .Locations import NightreignLocation, location_name, location_name_to_id
+from .Locations import NightreignLocation, location_name, location_name_boss_only, location_name_to_id
 from .Options import NightreignOptions
 
 
@@ -37,11 +37,13 @@ class NightreignWeb(WebWorld):
 class NightreignWorld(World):
     """
     Elden Ring Nightreign is a co-op roguelike action game from FromSoftware.
-    Location checks are "defeat Nightlord X as character Y", detected via
+    Location checks are "defeat Nightlord X" (or, with check_granularity set
+    to boss_and_character, "defeat Nightlord X as character Y"), detected via
     read-only game memory polling. With the gate_boss_access option enabled,
-    Nightlords beyond Tricephalos are also gated behind receiving their
-    Access item, written into the running game process; otherwise received
-    items are flavorful and have no in-game effect.
+    Nightlords not already unlocked (Tricephalos and the chosen starting_boss
+    are always free) are gated behind receiving their Access item, written
+    into the running game process; otherwise received items are flavorful
+    and have no in-game effect.
     """
 
     game = "Elden Ring Nightreign"
@@ -57,6 +59,8 @@ class NightreignWorld(World):
     location_name_to_id = location_name_to_id
 
     active_locations: list[str]
+    starting_boss: str
+    freed_nightlords: set
 
     def generate_early(self) -> None:
         # This tracker has no item/location gating at all (topology_present
@@ -70,21 +74,31 @@ class NightreignWorld(World):
         # docs/adding games.md's "a set completion condition" requirement.
         self.multiworld.completion_condition[self.player] = lambda state: True
 
+        self.starting_boss = NIGHTLORDS[self.options.starting_boss.value]
+        self.freed_nightlords = set(starting_free_nightlords(self.starting_boss))
+
     def create_regions(self) -> None:
-        included_characters = self.options.included_characters.value
         included_nightlords = self.options.included_nightlords.value
 
         # Iterate CHARACTERS/NIGHTLORDS (fixed order) rather than the option
         # sets directly, so location creation order - and therefore id
         # assignment order for anything downstream that relies on it - stays
         # deterministic regardless of set iteration order.
-        self.active_locations = [
-            location_name(character, nightlord)
-            for character in CHARACTERS
-            if character in included_characters
-            for nightlord in NIGHTLORDS
-            if nightlord in included_nightlords
-        ]
+        if self.options.check_granularity == "boss_and_character":
+            included_characters = self.options.included_characters.value
+            self.active_locations = [
+                location_name(character, nightlord)
+                for character in CHARACTERS
+                if character in included_characters
+                for nightlord in NIGHTLORDS
+                if nightlord in included_nightlords
+            ]
+        else:
+            self.active_locations = [
+                location_name_boss_only(nightlord)
+                for nightlord in NIGHTLORDS
+                if nightlord in included_nightlords
+            ]
 
         menu = Region("Menu", self.player, self.multiworld)
         menu.locations += [
@@ -101,7 +115,8 @@ class NightreignWorld(World):
         if self.options.gate_boss_access:
             included_nightlords = self.options.included_nightlords.value
             access_names = [
-                f"{name} Access" for name in ACCESS_NIGHTLORDS if name in included_nightlords
+                f"{name} Access" for name in ACCESS_NIGHTLORDS
+                if name in included_nightlords and name not in self.freed_nightlords
             ]
 
         self.multiworld.itempool += [self.create_item(name) for name in access_names]
@@ -122,4 +137,8 @@ class NightreignWorld(World):
         return self.random.choice(FILLER_ITEM_NAMES)
 
     def fill_slot_data(self) -> dict:
-        return {"gate_boss_access": bool(self.options.gate_boss_access)}
+        return {
+            "gate_boss_access": bool(self.options.gate_boss_access),
+            "starting_boss": self.starting_boss,
+            "check_granularity": self.options.check_granularity.current_key,
+        }

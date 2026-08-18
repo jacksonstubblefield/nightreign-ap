@@ -86,32 +86,19 @@ class GateBossAccess(Toggle):
     default = 1
 
 
-class RandomizeWeapons(Toggle):
-    """If enabled, some filler items become "Randomized Weapon" instead of a Nightlord Trophy -
-    received items resolve client-side to a real, randomly-rolled weapon (id, upgrade tier,
-    Ash of War, and affinity all independently randomized) dropped on the ground the next time
-    you enter an Expedition.
-
-    Off by default: this depends on a write path to the game process that (unlike
-    gate_boss_access's EventFlag writes) hasn't been live-verified yet - see the project's dev
-    notes before turning this on for anything but testing.
+class ReceiveWeapons(Toggle):
+    """If enabled, includes randomized weapons as filler items.
     """
 
-    display_name = "Randomize Weapons"
+    display_name = "Receive Weapons"
     default = 0
 
 
-class RandomizeTalismans(Toggle):
-    """If enabled, some filler items become "Randomized Talisman" instead of a Nightlord Trophy -
-    received items resolve client-side to a real, randomly-rolled talisman (from a fixed list -
-    no upgrade tier, unlike Randomized Weapon) dropped on the ground the next time you enter an
-    Expedition.
-
-    Off by default: this depends on the same write path as randomize_weapons - see that option's
-    notes before turning this on for anything but testing.
+class ReceiveTalismans(Toggle):
+    """If enabled, includes randomized talismans as filler items.
     """
 
-    display_name = "Randomize Talismans"
+    display_name = "Receive Talismans"
     default = 0
 
 
@@ -181,8 +168,8 @@ class NightreignOptions(PerGameCommonOptions):
     bosses_with_characters: BossesWithCharacters
     starting_boss: StartingBoss
     gate_boss_access: GateBossAccess
-    randomize_weapons: RandomizeWeapons
-    randomize_talismans: RandomizeTalismans
+    receive_weapons: ReceiveWeapons
+    receive_talismans: ReceiveTalismans
     goal: Goal
     goal_random_min: GoalRandomMin
     goal_random_max: GoalRandomMax

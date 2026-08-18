@@ -22,7 +22,7 @@ from typing import Optional
 import colorama
 
 import Utils
-from CommonClient import (ClientCommandProcessor, CommonContext, get_base_parser, 
+from CommonClient import (ClientCommandProcessor, CommonContext, get_base_parser,
                           gui_enabled, server_loop)
 from NetUtils import ClientStatus
 
@@ -47,6 +47,11 @@ def _safe_filename_component(text: str) -> str:
 
 
 class NightreignCommandProcessor(ClientCommandProcessor):
+    """ClientCommandProcessor for Nightreign
+
+    Args:
+        ClientCommandProcessor (_type_): _description_
+    """
     ctx: "NightreignContext"
 
     def _cmd_status(self):
@@ -58,13 +63,10 @@ class NightreignContext(CommonContext):
     game = "Elden Ring Nightreign"
     command_processor = NightreignCommandProcessor
     items_handling = 0b111
-
     reader: NightreignMemoryReader
     poll_task: Optional[asyncio.Task]
-
     run_state_path: Optional[str]
     checked_location_ids: set
-
     slot_data: dict
     gate_boss_access: bool
     freed_nightlords: set
@@ -97,6 +99,8 @@ class NightreignContext(CommonContext):
         self._last_overlay_state = None
 
     def run_gui(self):
+
+        # Allow deferred import for GUI
         from kvui import GameManager
 
         class NightreignManager(GameManager):
@@ -333,6 +337,8 @@ class NightreignContext(CommonContext):
     # --- Memory polling ---
 
     async def poll_loop(self) -> None:
+        """Polls the game process for wins and other state changes, and handles them.
+        """
         while True:
             try:
                 if not self.reader.connected:
@@ -445,6 +451,8 @@ class NightreignContext(CommonContext):
         await self.check_locations([location_id])
 
     def print_status(self) -> None:
+        """Prints the current live readings from the memory reader, for debugging.
+        """
         if not self.reader.connected:
             logger.info("Nightreign: not connected to the game process.")
             return
@@ -461,6 +469,9 @@ class NightreignContext(CommonContext):
 
 
 async def main(args) -> None:
+    """Main entry point for the Nightreign client.
+
+    """
     ctx = NightreignContext(args.connect, args.password)
     ctx.auth = args.name
     ctx.server_task = asyncio.create_task(server_loop(ctx), name="server loop")

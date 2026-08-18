@@ -140,7 +140,8 @@ def _main():
     print(f"EventFlag ptr slot: {ptr_slot:#x}  EventFlagBaseA: {base_a_addr:#x}")
     writer = NightreignMemoryWriter(reader.pm, ptr_slot, base_a_addr)
     ok = writer.set_event_flag(args.flag, bool(args.on))
-    print(f"SetEventFlag({args.flag}, {args.on}) -> {'dispatched' if ok else 'FAILED (pointer unreadable)'}")
+    print(f"SetEventFlag({args.flag}, {args.on}) -> {'dispatched' if ok else 
+                                                     'FAILED (pointer unreadable)'}")
     print("Check the in-game Expeditions screen to confirm the visual result.")
 
 

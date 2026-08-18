@@ -6,26 +6,36 @@ from .game_data import ACCESS_NIGHTLORDS, NIGHTLORDS
 
 
 class NightreignItem(Item):
+    """Base Nightreign item class, used to set the game name for all items in this world.
+
+    Args:
+        Item (_type_): _description_
+    """
     game: str = "Elden Ring Nightreign"
 
 
 class ItemData(NamedTuple):
+    """Item data for Nightreign items, used to store the item code and classification.
+
+    Args:
+        NamedTuple (_type_): _description_
+    """
     code: int
     classification: ItemClassification = ItemClassification.filler
 
 
-base_id = 3939000
+BASE_ID = 3939000
 
 # One flavorful filler item per Nightlord, plus one progression "Access" item per Nightlord
 # tracking whether this player has actually earned it (see game_data.py's ACCESS_NIGHTLORDS -
 # this includes Tricephalos even though it needs no in-game flag write, since AP ownership and
-# in-game visibility aren't the same thing). Trophy codes stay at base_id+0..7 so existing seeds'
-# item ids don't shift; Access items append at base_id+8.. with no collisions.
+# in-game visibility aren't the same thing). Trophy codes stay at BASE_ID+0..7 so existing seeds'
+# item ids don't shift; Access items append at BASE_ID+8.. with no collisions.
 item_table = {
-    f"{name} Trophy": ItemData(base_id + i)
+    f"{name} Trophy": ItemData(BASE_ID + i)
     for i, name in enumerate(NIGHTLORDS)
 } | {
-    f"{name} Access": ItemData(base_id + len(NIGHTLORDS) + i, ItemClassification.progression)
+    f"{name} Access": ItemData(BASE_ID + len(NIGHTLORDS) + i, ItemClassification.progression)
     for i, name in enumerate(ACCESS_NIGHTLORDS)
 }
 

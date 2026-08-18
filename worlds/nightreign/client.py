@@ -26,6 +26,7 @@ import logging
 import os
 import random
 import re
+import time
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -53,6 +54,16 @@ logger = logging.getLogger("NightreignClient")
 POLL_INTERVAL = 0.25
 RECONNECT_INTERVAL = 2
 BUILD_MISMATCH_BACKOFF = 30
+
+# The animation-based flying check (see game_data.py's FLYING_ANIMATION_RANGE) was only ever
+# RE'd from mid-run flight points, not the ~10s airdrop the character rides in on when first
+# entering an Expedition - live-confirmed that drop-in sequence uses a different, uncatalogued
+# animation id the check doesn't recognize as "flying", so a drop requested right as in_hub flips
+# False could land while the character was still mid-descent and get lost. This cooldown is a
+# blunt backstop on top of the existing animation check, not a replacement for it: no delivery is
+# attempted at all until this many seconds after in_hub is first observed False, comfortably
+# past the known ~10s airdrop with margin for the read/observation lag on top of it.
+EXPEDITION_ENTRY_SETTLE_SECONDS = 15
 
 
 def _safe_filename_component(text: str) -> str:
@@ -92,6 +103,7 @@ class NightreignContext(CommonContext):
     overlay: Optional[NightreignOverlay]
     item_drop_writer: Optional[NightreignItemDropWriter]
     _worldchrman_slot: Optional[int]
+    _hub_exit_time: Optional[float]
 
     _last_pulse: Optional[int]
     _synced_flags: set
@@ -118,6 +130,7 @@ class NightreignContext(CommonContext):
         self.overlay = None
         self.item_drop_writer = None
         self._worldchrman_slot = None
+        self._hub_exit_time = None
         self._last_pulse = None
         self._synced_flags = set()
         self._last_overlay_state = None
@@ -588,6 +601,7 @@ class NightreignContext(CommonContext):
                     self._synced_flags.clear()
                     self.item_drop_writer = None
                     self._worldchrman_slot = None
+                    self._hub_exit_time = None
                     self._locked_boss_warned = False
                     try:
                         if self.reader.connect():
@@ -639,14 +653,32 @@ class NightreignContext(CommonContext):
                             self._locked_boss_warned = True
                             self._warn_if_boss_locked(boss.name)
 
-                if (self.randomize_weapons or self.randomize_talismans) and in_hub is False:
+                if self.randomize_weapons or self.randomize_talismans:
+                    # Tracks how long we've continuously seen in_hub is False, so the settle-time
+                    # check below can tell "just exited the hub" apart from "been in the
+                    # Expedition a while" - reset on True so re-entering a fresh Expedition later
+                    # gets its own full settle window rather than reusing an old timestamp. Left
+                    # untouched while in_hub is None (transiently unreadable), same conservative
+                    # handling as _locked_boss_warned's re-arm logic above.
+                    if in_hub:
+                        self._hub_exit_time = None
+                    elif in_hub is False and self._hub_exit_time is None:
+                        self._hub_exit_time = time.monotonic()
+
+                if (
+                    (self.randomize_weapons or self.randomize_talismans)
+                    and in_hub is False
+                    and self._hub_exit_time is not None
+                    and time.monotonic() - self._hub_exit_time >= EXPEDITION_ENTRY_SETTLE_SECONDS
+                ):
                     # Level-triggered on every tick, not edge-triggered on hub-exit: a pending drop
                     # needs BOTH "confirmed in an Expedition" and "confirmed not mid-flight" to
                     # actually land (live-tested - see game_data.py's WORLDCHRMAN_AOB/
-                    # is_flying_animation comments) - the player can still be mid-air from the
-                    # ~10s expedition-entry flight-in, or using a mid-run flight point, at the
-                    # exact tick in_hub first flips False. Retrying every tick while a drop is
-                    # still pending is safe: _delivered_weapon_keys/_delivered_talisman_keys
+                    # is_flying_animation comments) - the player can still be mid-air from a
+                    # mid-run flight point at the exact tick this fires, hence the animation check
+                    # below too, on top of the EXPEDITION_ENTRY_SETTLE_SECONDS backstop for the
+                    # airdrop specifically (see that constant's comment). Retrying every tick while
+                    # a drop is still pending is safe: _delivered_weapon_keys/_delivered_talisman_keys
                     # already prevent re-sending once a drop succeeds (see
                     # _pending_drop_keys/_deliver_pending_drops).
                     animation = (

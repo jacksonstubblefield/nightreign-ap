@@ -44,6 +44,9 @@ item_table = {
     # option is on for this slot - with it off, this item is never placed in the pool at all
     # (see __init__.py's get_filler_item_name), so it behaves like any other flavorful filler.
     "Randomized Weapon": ItemData(BASE_ID + len(NIGHTLORDS) + len(ACCESS_NIGHTLORDS)),
+    # Same shape as "Randomized Weapon" above, gated by the randomize_talismans option instead -
+    # appended after it so existing seeds' ids still never shift.
+    "Randomized Talisman": ItemData(BASE_ID + len(NIGHTLORDS) + len(ACCESS_NIGHTLORDS) + 1),
 }
 
 # get_filler_item_name() must only ever choose from FILLER_ITEM_NAMES (extended with

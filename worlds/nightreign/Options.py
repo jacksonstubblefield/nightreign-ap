@@ -101,6 +101,20 @@ class RandomizeWeapons(Toggle):
     default = 0
 
 
+class RandomizeTalismans(Toggle):
+    """If enabled, some filler items become "Randomized Talisman" instead of a Nightlord Trophy -
+    received items resolve client-side to a real, randomly-rolled talisman (from a fixed list -
+    no upgrade tier, unlike Randomized Weapon) dropped on the ground the next time you enter an
+    Expedition.
+
+    Off by default: this depends on the same write path as randomize_weapons - see that option's
+    notes before turning this on for anything but testing.
+    """
+
+    display_name = "Randomize Talismans"
+    default = 0
+
+
 class Goal(Choice):
     """What this slot needs to accomplish to complete its goal.
 
@@ -168,6 +182,7 @@ class NightreignOptions(PerGameCommonOptions):
     starting_boss: StartingBoss
     gate_boss_access: GateBossAccess
     randomize_weapons: RandomizeWeapons
+    randomize_talismans: RandomizeTalismans
     goal: Goal
     goal_random_min: GoalRandomMin
     goal_random_max: GoalRandomMax

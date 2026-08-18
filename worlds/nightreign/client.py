@@ -4,13 +4,14 @@ Polls the running game via memory_reader.py and sends a location check on
 each detected Nightlord win. When the gate_boss_access option is on for this
 slot (learned from slot_data on connect), received Access items are synced
 into the game via memory_writer.py's SetEventFlag port, gating which
-Nightlords are actually selectable. When randomize_weapons is on, received
-"Randomized Weapon" filler items are rolled into a real weapon client-side
-(see _roll_weapon_drop) and dropped on the ground via memory_writer.py's
-NightreignItemDropWriter the next time an Expedition is entered. With both
-options off, received items have no in-game effect - the base
-CommonContext/CLI/GUI machinery just logs them, same as before either was
-added.
+Nightlords are actually selectable. When randomize_weapons and/or
+randomize_talismans is on, received "Randomized Weapon"/"Randomized Talisman"
+filler items are rolled into a real weapon/talisman client-side (see
+_roll_weapon_drop/_roll_talisman_drop) and dropped on the ground via
+memory_writer.py's NightreignItemDropWriter (shared by both - it's item-type
+agnostic) the next time an Expedition is entered. With all three options off,
+received items have no in-game effect - the base CommonContext/CLI/GUI
+machinery just logs them, same as before any was added.
 """
 
 from __future__ import annotations
@@ -33,8 +34,8 @@ from CommonClient import (ClientCommandProcessor, CommonContext, get_base_parser
 from NetUtils import ClientStatus
 
 from .game_data import (ACCESS_ITEM_EVENT_FLAGS, ACCESS_NIGHTLORDS, EFFECT_CAP_MAP,
-                        WEAPON_ART_TABLE, WEAPON_TABLE, roll_effect_tier, roll_upgrade_tier,
-                        starting_free_nightlords)
+                        TALISMAN_TABLE, WEAPON_ART_TABLE, WEAPON_TABLE, roll_effect_tier,
+                        roll_upgrade_tier, starting_free_nightlords)
 from .Items import lookup_id_to_name
 from .Locations import location_name, location_name_boss_only, location_name_to_id
 from .memory_reader import NightreignMemoryReader, PointerNotFoundError
@@ -78,6 +79,7 @@ class NightreignContext(CommonContext):
     slot_data: dict
     gate_boss_access: bool
     randomize_weapons: bool
+    randomize_talismans: bool
     freed_nightlords: set
     per_character_checks: bool
     goal: str
@@ -91,6 +93,7 @@ class NightreignContext(CommonContext):
     _last_overlay_state: Optional[tuple]
     _last_hub_state: Optional[bool]
     _delivered_weapon_keys: set
+    _delivered_talisman_keys: set
 
     def __init__(self, server_address: Optional[str], password: Optional[str]):
         super().__init__(server_address, password)
@@ -101,6 +104,7 @@ class NightreignContext(CommonContext):
         self.slot_data = {}
         self.gate_boss_access = False
         self.randomize_weapons = False
+        self.randomize_talismans = False
         self.freed_nightlords = set()
         self.per_character_checks = False
         self.goal = "all_bosses"
@@ -113,6 +117,7 @@ class NightreignContext(CommonContext):
         self._last_overlay_state = None
         self._last_hub_state = None
         self._delivered_weapon_keys = set()
+        self._delivered_talisman_keys = set()
 
     def run_gui(self):
 
@@ -143,6 +148,7 @@ class NightreignContext(CommonContext):
             self.slot_data = args.get("slot_data", {}) or {}
             self.gate_boss_access = bool(self.slot_data.get("gate_boss_access", False))
             self.randomize_weapons = bool(self.slot_data.get("randomize_weapons", False))
+            self.randomize_talismans = bool(self.slot_data.get("randomize_talismans", False))
             self.freed_nightlords = set(
                 starting_free_nightlords(self.slot_data.get("starting_boss", "Tricephalos"))
             )
@@ -179,15 +185,16 @@ class NightreignContext(CommonContext):
             asyncio.create_task(self._sync_event_flags())
             # Same race as gating above: the game process may already be attached from before
             # this connect, so build the item-drop writer here too, not just in poll_loop.
-            self._ensure_weapon_drop_ready()
+            self._ensure_item_drop_ready()
 
         if cmd == "ReceivedItems":
             if self.gate_boss_access:
                 asyncio.create_task(self._sync_event_flags())
-            # No action needed here for randomize_weapons - _pending_weapon_keys() recomputes
-            # from self.items_received fresh every time poll_loop's hub-exit edge fires, so a
-            # newly received "Randomized Weapon" is picked up automatically on the next
-            # Expedition entry without any bookkeeping needed at receive time.
+            # No action needed here for randomize_weapons/randomize_talismans -
+            # _pending_drop_keys() recomputes from self.items_received fresh every time
+            # poll_loop's hub-exit edge fires, so a newly received "Randomized Weapon"/
+            # "Randomized Talisman" is picked up automatically on the next Expedition entry
+            # without any bookkeeping needed at receive time.
 
         if cmd == "RoomUpdate":
             # ctx.missing_locations is updated (by the base on_package
@@ -290,39 +297,45 @@ class NightreignContext(CommonContext):
         logger.info("Boss-gating writer resolved (ptr_slot=0x%X, base_a=0x%X).",
                     ptr_slot, base_a_addr)
 
-    # --- Randomized-weapon write path ---
+    # --- Randomized item-drop write path (weapons and talismans) ---
     #
-    # Off unless slot_data says randomize_weapons is on for this slot. A received "Randomized
-    # Weapon" filler item is deterministically rolled into a real weapon (see
-    # _roll_weapon_drop) and dropped on the ground the next time the hub->active-run edge fires
-    # in poll_loop (i.e. the next Expedition entry) - not immediately on receipt, since there's
-    # no safe way to drop an item while in the hub/menu.
+    # Off unless slot_data says randomize_weapons and/or randomize_talismans is on for this slot.
+    # A received "Randomized Weapon"/"Randomized Talisman" filler item is deterministically
+    # rolled into a real item (see _roll_weapon_drop/_roll_talisman_drop) and dropped on the
+    # ground the next time the hub->active-run edge fires in poll_loop (i.e. the next Expedition
+    # entry) - not immediately on receipt, since there's no safe way to drop an item while in the
+    # hub/menu. One item_drop_writer is shared by both - memory_writer.py's drop_item() is
+    # item-type agnostic (category comes from the item id itself), so there's no need for a
+    # second write path.
 
-    def _ensure_weapon_drop_ready(self) -> None:
-        """Same "build once both the option and the game connection are known" shape as
+    def _ensure_item_drop_ready(self) -> None:
+        """Same "build once both an option and the game connection are known" shape as
         _ensure_gating_ready, for the same race-condition reason - called from both here and
         poll_loop's connect-transition. A no-op once the writer already exists."""
-        if not self.randomize_weapons or not self.reader.connected or self.item_drop_writer is not None:
+        if (not (self.randomize_weapons or self.randomize_talismans) or not self.reader.connected
+                or self.item_drop_writer is not None):
             return
         try:
             targets = self.reader.resolve_item_drop_targets()
         except PointerNotFoundError as e:
-            logger.error("Randomized-weapon write path unavailable (%s) - disabling this "
-                         "session, the read-only tracker is unaffected.", e)
+            logger.error("Randomized item-drop write path unavailable (%s) - disabling "
+                         "randomize_weapons/randomize_talismans this session, the read-only "
+                         "tracker is unaffected.", e)
             self.randomize_weapons = False
+            self.randomize_talismans = False
             return
         self.item_drop_writer = NightreignItemDropWriter(self.reader.pm, targets)
-        logger.info("Randomized-weapon writer resolved.")
+        logger.info("Randomized item-drop writer resolved.")
 
-    def _pending_weapon_keys(self) -> set:
-        """(location, player) keys for every received "Randomized Weapon" item not yet
-        delivered - recomputed fresh from self.items_received each call rather than tracked
-        incrementally, the same "diff against what's already done" shape as _sync_event_flags."""
+    def _pending_drop_keys(self, item_name: str, delivered_keys: set) -> set:
+        """(location, player) keys for every received `item_name` filler item not yet delivered -
+        recomputed fresh from self.items_received each call rather than tracked incrementally,
+        the same "diff against what's already done" shape as _sync_event_flags."""
         received = {
             (i.location, i.player) for i in self.items_received
-            if lookup_id_to_name.get(i.item) == "Randomized Weapon"
+            if lookup_id_to_name.get(i.item) == item_name
         }
-        return received - self._delivered_weapon_keys
+        return received - delivered_keys
 
     def _roll_weapon_drop(self, location: int, player: int) -> dict:
         """Deterministic roll for one "Randomized Weapon" filler instance, seeded off which
@@ -348,35 +361,60 @@ class NightreignContext(CommonContext):
             "effect_tier": roll_effect_tier(rng.randint(0, 100)),
         }
 
-    async def _deliver_pending_weapons(self) -> None:
+    def _roll_talisman_drop(self, location: int, player: int) -> dict:
+        """Deterministic roll for one "Randomized Talisman" filler instance, same seeding idea as
+        _roll_weapon_drop (seed_name + location + player, so retries/reconnects reproduce the
+        same talisman rather than re-rolling) but much simpler: talismans have no upgrade tier,
+        Ash of War, or affinity to roll - just a uniform pick over game_data.TALISMAN_TABLE.
+        Every other drop_item() argument is left at its default ("none"/no-op for a weapon-only
+        field), which memory_writer.py's drop_item/the source CT script's dropItem() both already
+        skip entirely for a non-Weapon item type.
+        """
+        rng = random.Random(f"{self.seed_name}:{location}:{player}:talisman")
+        return {"item_id": rng.choice(list(TALISMAN_TABLE))}
+
+    async def _deliver_pending_drops(
+        self, item_name: str, roll_fn, delivered_keys: set, event_type: str, log_label: str
+    ) -> None:
         if self.item_drop_writer is None:
             return
-        pending = self._pending_weapon_keys()
+        pending = self._pending_drop_keys(item_name, delivered_keys)
         if not pending:
             return
         loop = asyncio.get_running_loop()
         for location, player in pending:
-            roll = self._roll_weapon_drop(location, player)
+            roll = roll_fn(location, player)
             ok = await loop.run_in_executor(
                 None, functools.partial(self.item_drop_writer.drop_item, **roll)
             )
             if ok:
-                self._delivered_weapon_keys.add((location, player))
+                delivered_keys.add((location, player))
                 self._append_event({
                     "timestamp": datetime.now(timezone.utc).isoformat(),
-                    "type": "weapon_drop",
+                    "type": event_type,
                     "location": location,
                     "player": player,
                     **roll,
                 })
-                logger.info("Dropped randomized weapon 0x%X (upgrade_level=%s) for "
-                            "location=%s player=%s.", roll["item_id"], roll["upgrade_level"],
-                            location, player)
+                logger.info("Dropped %s 0x%X for location=%s player=%s.",
+                            log_label, roll["item_id"], location, player)
             else:
-                # Not removed from the pending set - _pending_weapon_keys() will offer it again
-                # on the next Expedition entry, matching _sync_event_flags's retry shape.
-                logger.warning("Weapon drop skipped for location=%s player=%s - game not ready, "
-                                "will retry on next Expedition entry.", location, player)
+                # Not removed from the pending set - _pending_drop_keys() will offer it again on
+                # the next Expedition entry, matching _sync_event_flags's retry shape.
+                logger.warning("%s drop skipped for location=%s player=%s - game not ready, "
+                                "will retry on next Expedition entry.", log_label, location, player)
+
+    async def _deliver_pending_weapons(self) -> None:
+        await self._deliver_pending_drops(
+            "Randomized Weapon", self._roll_weapon_drop, self._delivered_weapon_keys,
+            "weapon_drop", "randomized weapon"
+        )
+
+    async def _deliver_pending_talismans(self) -> None:
+        await self._deliver_pending_drops(
+            "Randomized Talisman", self._roll_talisman_drop, self._delivered_talisman_keys,
+            "talisman_drop", "randomized talisman"
+        )
 
     # --- Per-run local state file ---
     #
@@ -412,15 +450,21 @@ class NightreignContext(CommonContext):
                     (int(location), int(player))
                     for location, player in data.get("delivered_weapon_keys", [])
                 }
+                self._delivered_talisman_keys = {
+                    (int(location), int(player))
+                    for location, player in data.get("delivered_talisman_keys", [])
+                }
             except (json.JSONDecodeError, OSError, ValueError) as e:
                 logger.warning(
                     "Could not read existing Nightreign run state at %s: %s", self.run_state_path, e
                 )
                 self.checked_location_ids = set()
                 self._delivered_weapon_keys = set()
+                self._delivered_talisman_keys = set()
         else:
             self.checked_location_ids = set()
             self._delivered_weapon_keys = set()
+            self._delivered_talisman_keys = set()
             self._write_run_state(seed_name, slot_name, events=[])
 
         logger.info("Nightreign run state file: %s", self.run_state_path)
@@ -431,6 +475,7 @@ class NightreignContext(CommonContext):
             "slot_name": slot_name,
             "checked_locations": sorted(self.checked_location_ids),
             "delivered_weapon_keys": sorted(list(key) for key in self._delivered_weapon_keys),
+            "delivered_talisman_keys": sorted(list(key) for key in self._delivered_talisman_keys),
             "events": events,
         }
         with open(self.run_state_path, "w", encoding="utf-8") as f:
@@ -446,10 +491,14 @@ class NightreignContext(CommonContext):
         except (FileNotFoundError, json.JSONDecodeError, OSError):
             data = {
                 "seed_name": seed_name, "slot_name": slot_name,
-                "checked_locations": [], "delivered_weapon_keys": [], "events": [],
+                "checked_locations": [], "delivered_weapon_keys": [],
+                "delivered_talisman_keys": [], "events": [],
             }
         data["checked_locations"] = sorted(self.checked_location_ids)
         data["delivered_weapon_keys"] = sorted(list(key) for key in self._delivered_weapon_keys)
+        data["delivered_talisman_keys"] = sorted(
+            list(key) for key in self._delivered_talisman_keys
+        )
         data.setdefault("events", []).append(event)
         with open(self.run_state_path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
@@ -476,7 +525,7 @@ class NightreignContext(CommonContext):
                             self._ensure_gating_ready()
                             if self.gate_boss_access:
                                 asyncio.create_task(self._sync_event_flags())
-                            self._ensure_weapon_drop_ready()
+                            self._ensure_item_drop_ready()
                         else:
                             await asyncio.sleep(RECONNECT_INTERVAL)
                             continue
@@ -504,13 +553,16 @@ class NightreignContext(CommonContext):
                 # active run, None if transiently unreadable (e.g. a scene transition).
                 in_hub = self.reader.read_hub_state()
 
-                if self.randomize_weapons and in_hub is not None:
+                if (self.randomize_weapons or self.randomize_talismans) and in_hub is not None:
                     # Only a *confirmed* True->False read counts as "just entered an Expedition" -
                     # deliberately not coercing a transient None to False here (unlike the
                     # overlay's bool(in_hub) below), since that could misfire a real remote-thread
                     # dispatch off a momentarily-unreadable read instead of a genuine transition.
                     if self._last_hub_state is True and in_hub is False:
-                        await self._deliver_pending_weapons()
+                        if self.randomize_weapons:
+                            await self._deliver_pending_weapons()
+                        if self.randomize_talismans:
+                            await self._deliver_pending_talismans()
                     self._last_hub_state = in_hub
 
                 if self.gate_boss_access and self.overlay is not None:

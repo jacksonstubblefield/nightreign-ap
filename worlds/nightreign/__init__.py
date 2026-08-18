@@ -211,12 +211,15 @@ class NightreignWorld(World):
             # Given equal weight alongside each individual Trophy name, not a separate slice of
             # the pool - e.g. with 8 Nightlords, this is a 1-in-9 chance per filler roll.
             names = names + ["Randomized Weapon"]
+        if self.options.randomize_talismans:
+            names = names + ["Randomized Talisman"]
         return self.random.choice(names)
 
     def fill_slot_data(self) -> dict:
         return {
             "gate_boss_access": bool(self.options.gate_boss_access),
             "randomize_weapons": bool(self.options.randomize_weapons),
+            "randomize_talismans": bool(self.options.randomize_talismans),
             "starting_boss": self.starting_boss,
             "bosses_with_characters": self.options.bosses_with_characters.current_key,
             "goal": self.options.goal.current_key,

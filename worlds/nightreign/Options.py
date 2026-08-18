@@ -56,17 +56,6 @@ class BossesWithCharacters(Choice):
 class StartingBoss(Choice):
     """Which Nightlord starts unlocked, before receiving any Access items - or "random" to have
     the generator pick one for this slot.
-
-    Picking Tricephalos here (the default) frees it from an AP perspective, matching how it's
-    already always selectable in-game on a fresh save with no flag write needed (see game_data.py)
-    - so no Access item for it needs to be found. Picking anything else means Tricephalos is
-    NOT free: like any other Nightlord that isn't your starting_boss, you'll need to receive its
-    Access item before it counts as yours, even though the vanilla game still lets you select it
-    (the overlay is what shows you that mismatch - see GateBossAccess). Picking one of the 6
-    secondary Nightlords additionally frees just that one from an AP perspective, without needing
-    its Access item - though the game's own all-or-nothing flag will also reveal its 5 siblings
-    in-game as an unavoidable side effect; those still need their own Access item to actually be
-    yours.
     """
 
     display_name = "Starting Boss"
@@ -91,15 +80,6 @@ assert [StartingBoss.name_lookup[i] for i in range(len(NIGHTLORDS))] == [
 class GateBossAccess(Toggle):
     """If enabled, every Nightlord other than your chosen starting_boss requires receiving that
     Nightlord's Access item before it counts as yours.
-
-    This writes to the running game process (not just reads) and needs Borderless Windowed mode
-    so the client can show an overlay of which bosses you actually own. The underlying game only
-    supports gating in two ways - Tricephalos is always selectable with no flag at all, and the
-    other 6 secondary Nightlords reveal as one all-or-nothing batch - so plenty of not-yet-owned
-    Nightlords (Tricephalos included) can still be visible/selectable in-game; the overlay exists
-    to show you which ones those are.
-
-    On by default.
     """
 
     display_name = "Gate Boss Access Behind Items"

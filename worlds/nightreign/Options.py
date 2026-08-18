@@ -91,7 +91,7 @@ class ReceiveWeapons(Toggle):
     """
 
     display_name = "Receive Weapons"
-    default = 0
+    default = 1
 
 
 class ReceiveTalismans(Toggle):
@@ -99,7 +99,7 @@ class ReceiveTalismans(Toggle):
     """
 
     display_name = "Receive Talismans"
-    default = 0
+    default = 1
 
 
 class Goal(Choice):

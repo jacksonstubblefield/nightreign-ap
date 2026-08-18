@@ -25,12 +25,12 @@ def location_name_boss_only(nightlord: str) -> str:
 
 
 # One location per (character x Nightlord) combination, plus one boss-only location per Nightlord -
-# the full matrix for both check_granularity modes, regardless of a given player's
-# included_characters/included_nightlords/check_granularity options. World.create_regions() filters
+# the full matrix for both bosses_with_characters modes, regardless of a given player's
+# included_characters/included_nightlords/bosses_with_characters options. World.create_regions() filters
 # this down per-player; this table just needs to cover every name/id any player could pick.
 #
 # The boss-only entries are appended after the per-character range (not interleaved) so existing
-# per-character location ids never shift for seeds already generated before check_granularity existed.
+# per-character location ids never shift for seeds already generated before bosses_with_characters existed.
 _per_character_table = {
     location_name(character, nightlord): LocationData(base_id + i)
     for i, (character, nightlord) in enumerate(

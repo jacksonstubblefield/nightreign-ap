@@ -69,6 +69,8 @@ class NightreignContext(CommonContext):
     gate_boss_access: bool
     freed_nightlords: set
     per_character_checks: bool
+    goal: str
+    goal_groups: list
     writer: Optional[NightreignMemoryWriter]
     overlay: Optional[NightreignOverlay]
 
@@ -86,6 +88,8 @@ class NightreignContext(CommonContext):
         self.gate_boss_access = False
         self.freed_nightlords = set()
         self.per_character_checks = False
+        self.goal = "all_bosses"
+        self.goal_groups = []
         self.writer = None
         self.overlay = None
         self._last_pulse = None
@@ -122,8 +126,10 @@ class NightreignContext(CommonContext):
                 starting_free_nightlords(self.slot_data.get("starting_boss", "Tricephalos"))
             )
             self.per_character_checks = (
-                self.slot_data.get("check_granularity", "boss") == "boss_and_character"
+                self.slot_data.get("bosses_with_characters", "boss") == "boss_and_character"
             )
+            self.goal = self.slot_data.get("goal", "all_bosses")
+            self.goal_groups = self.slot_data.get("goal_groups") or []
             logger.info("gate_boss_access=%s for this slot.", self.gate_boss_access)
 
             # A flag write only ever confirms that the remote thread was dispatched, not that the
@@ -163,18 +169,30 @@ class NightreignContext(CommonContext):
             # since the server confirms via this packet rather than synchronously.
             asyncio.create_task(self._maybe_declare_goal())
 
+    def _goal_complete(self) -> bool:
+        # goal_groups (from slot_data, see World.create_regions()) is a list of groups, where
+        # each group is satisfied by ANY one of its location ids being checked - the overall
+        # goal needs EVERY group satisfied. Falls back to the pre-`goal`-option behavior ("no
+        # locations left to check at all") if slot_data has no goal_groups, e.g. stale slot_data
+        # from a seed generated before this existed.
+        if not self.goal_groups:
+            return not self.missing_locations
+        return all(
+            any(location_id not in self.missing_locations for location_id in group)
+            for group in self.goal_groups
+        )
+
     async def _maybe_declare_goal(self) -> None:
         # This tracker has no item/logic gating (topology_present = False,
         # every location is reachable from the start), so there's no
         # CollectionState-based completion_condition that could mean
-        # anything here - "goal" can only be observed client-side, as
-        # "no locations left to check for this slot's included
-        # characters/Nightlords". See docs/adding games.md's "Hard
-        # Requirements": a client must send a StatusUpdate on goal completion.
-        if not self.finished_game and self.slot is not None and not self.missing_locations:
+        # anything here - "goal" can only be observed client-side, via
+        # _goal_complete(). See docs/adding games.md's "Hard Requirements":
+        # a client must send a StatusUpdate on goal completion.
+        if not self.finished_game and self.slot is not None and self._goal_complete():
             self.finished_game = True
             await self.send_msgs([{"cmd": "StatusUpdate", "status": ClientStatus.CLIENT_GOAL}])
-            logger.info("All included locations checked - goal complete!")
+            logger.info("Goal '%s' complete!", self.goal)
 
     # --- Boss-access gating (write path) ---
     #

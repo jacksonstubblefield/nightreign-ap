@@ -25,7 +25,23 @@ Nothing in-game. You'll see a log message/toast for flavor, but items in this ve
 
 ## What is the goal / victory condition?
 
-Defeating every Nightlord you opted into, with every character you opted into.
+Configurable via the `goal` option:
+
+- **all_bosses** (default): defeat every Nightlord you opted into, with every character you
+  opted into (only applies when `bosses_with_characters` is `boss_and_character` - in `boss`
+  mode this is just "defeat every Nightlord you opted into").
+- **night_aspect**: defeat Night Aspect, the vanilla game's own ending/credits boss - any one
+  of your opted-into characters' wins counts.
+- **all_bosses_any_character**: defeat every Nightlord you opted into at least once, with any
+  one of your opted-into characters - no need to clear every character x Nightlord
+  combination.
+- **random_subset**: at generation time, a random number of specific "Defeat X as Y" objectives
+  (bounded by `goal_random_min`/`goal_random_max`) are chosen from your included characters
+  and Nightlords as the required set. Requires `bosses_with_characters` to be
+  `boss_and_character`.
+
+Whichever goal is picked, every included character x Nightlord combination still generates as
+a location check - the goal option only changes which of them are required to finish.
 
 ## A note on detection accuracy (early alpha)
 

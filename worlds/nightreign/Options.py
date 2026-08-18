@@ -5,7 +5,7 @@
 from dataclasses import dataclass
 
 # Outside Imports
-from Options import Choice, OptionSet, PerGameCommonOptions, Toggle
+from Options import Choice, OptionSet, PerGameCommonOptions, Range, Toggle
 
 # Local Imports
 from .game_data import CHARACTERS, NIGHTLORDS
@@ -106,6 +106,65 @@ class GateBossAccess(Toggle):
     default = 1
 
 
+class Goal(Choice):
+    """What this slot needs to accomplish to complete its goal.
+
+    "all_bosses" (default): every included character x Nightlord location (per
+    bosses_with_characters) must be checked - the original behavior.
+
+    "night_aspect": defeat Night Aspect - the vanilla game's own ending/credits boss. With
+    bosses_with_characters set to boss_and_character, any one included character's Night
+    Aspect win counts (matches how the vanilla game rolls credits on the first Night Aspect
+    kill regardless of character). Night Aspect must be in included_nightlords, or this goal
+    is unreachable.
+
+    "all_bosses_any_character": defeat every included Nightlord at least once, with any
+    included character - only differs from all_bosses when bosses_with_characters is
+    boss_and_character (in "boss" mode they're identical, since there's already only one
+    location per Nightlord). Every included character x Nightlord location still gets
+    generated as a regular, non-required check - this only changes what's required to finish.
+
+    "random_subset": bosses_with_characters must be boss_and_character. At generation time,
+    a random number of specific "Defeat X as Y" locations (between goal_random_min and
+    goal_random_max, drawn only from this slot's included_characters x included_nightlords,
+    no duplicates) are selected as the required objective set. Every other included
+    combination still exists as a regular, non-required check.
+    """
+
+    display_name = "Goal"
+    option_all_bosses = 0
+    option_night_aspect = 1
+    option_all_bosses_any_character = 2
+    option_random_subset = 3
+    default = 0
+
+
+class GoalRandomMin(Range):
+    """Minimum number of specific "Defeat X as Y" objectives to require, when goal is random_subset.
+
+    Ignored unless goal is set to random_subset.
+    """
+
+    display_name = "Random Goal Minimum Objectives"
+    range_start = 1
+    range_end = 80  # len(CHARACTERS) * len(NIGHTLORDS), the largest possible combo count.
+    default = 3
+
+
+class GoalRandomMax(Range):
+    """Maximum number of specific "Defeat X as Y" objectives to require, when goal is random_subset.
+
+    Ignored unless goal is set to random_subset. Silently clamped down to however many
+    included_characters x included_nightlords combinations this slot actually has available,
+    if set higher than that.
+    """
+
+    display_name = "Random Goal Maximum Objectives"
+    range_start = 1
+    range_end = 80
+    default = 8
+
+
 @dataclass
 class NightreignOptions(PerGameCommonOptions):
     included_characters: IncludedCharacters
@@ -113,3 +172,6 @@ class NightreignOptions(PerGameCommonOptions):
     bosses_with_characters: BossesWithCharacters
     starting_boss: StartingBoss
     gate_boss_access: GateBossAccess
+    goal: Goal
+    goal_random_min: GoalRandomMin
+    goal_random_max: GoalRandomMax

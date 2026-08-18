@@ -4,18 +4,29 @@ Polls the running game via memory_reader.py and sends a location check on
 each detected Nightlord win. When the gate_boss_access option is on for this
 slot (learned from slot_data on connect), received Access items are synced
 into the game via memory_writer.py's SetEventFlag port, gating which
-Nightlords are actually selectable. With that option off, received items
+Nightlords are actually selectable. When randomize_weapons and/or
+randomize_talismans is on, received "Randomized Weapon"/"Randomized Talisman"
+filler items are rolled into a real weapon/talisman client-side (see
+_roll_weapon_drop/_roll_talisman_drop) and dropped on the ground via
+memory_writer.py's NightreignItemDropWriter (shared by both - it's item-type
+agnostic) as soon as the player is confirmed both in an Expedition and not
+mid-flight (see game_data.py's WORLDCHRMAN_AOB/is_flying_animation - the drop
+function needs a grounded position, so this is checked every poll tick, not
+just once on Expedition entry). With all three options off, received items
 have no in-game effect - the base CommonContext/CLI/GUI machinery just logs
-them, same as before this was added.
+them, same as before any was added.
 """
 
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 import logging
 import os
+import random
 import re
+import time
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -26,11 +37,14 @@ from CommonClient import (ClientCommandProcessor, CommonContext, get_base_parser
                           gui_enabled, server_loop)
 from NetUtils import ClientStatus
 
-from .game_data import ACCESS_ITEM_EVENT_FLAGS, ACCESS_NIGHTLORDS, starting_free_nightlords
+from .game_data import (ACCESS_ITEM_EVENT_FLAGS, ACCESS_NIGHTLORDS, EFFECT_CAP_MAP,
+                        TALISMAN_TABLE, WEAPON_ART_TABLE, WEAPON_TABLE, is_flying_animation,
+                        natural_weapon_tier, roll_effect_tier, roll_upgrade_tier,
+                        starting_free_nightlords)
 from .Items import lookup_id_to_name
 from .Locations import location_name, location_name_boss_only, location_name_to_id
 from .memory_reader import NightreignMemoryReader, PointerNotFoundError
-from .memory_writer import NightreignMemoryWriter
+from .memory_writer import NightreignItemDropWriter, NightreignMemoryWriter
 from .overlay import NightreignOverlay
 
 logger = logging.getLogger("NightreignClient")
@@ -40,6 +54,16 @@ logger = logging.getLogger("NightreignClient")
 POLL_INTERVAL = 0.25
 RECONNECT_INTERVAL = 2
 BUILD_MISMATCH_BACKOFF = 30
+
+# The animation-based flying check (see game_data.py's FLYING_ANIMATION_RANGE) was only ever
+# RE'd from mid-run flight points, not the ~10s airdrop the character rides in on when first
+# entering an Expedition - live-confirmed that drop-in sequence uses a different, uncatalogued
+# animation id the check doesn't recognize as "flying", so a drop requested right as in_hub flips
+# False could land while the character was still mid-descent and get lost. This cooldown is a
+# blunt backstop on top of the existing animation check, not a replacement for it: no delivery is
+# attempted at all until this many seconds after in_hub is first observed False, comfortably
+# past the known ~10s airdrop with margin for the read/observation lag on top of it.
+EXPEDITION_ENTRY_SETTLE_SECONDS = 15
 
 
 def _safe_filename_component(text: str) -> str:
@@ -69,16 +93,24 @@ class NightreignContext(CommonContext):
     checked_location_ids: set
     slot_data: dict
     gate_boss_access: bool
+    randomize_weapons: bool
+    randomize_talismans: bool
     freed_nightlords: set
     per_character_checks: bool
     goal: str
     goal_groups: list
     writer: Optional[NightreignMemoryWriter]
     overlay: Optional[NightreignOverlay]
+    item_drop_writer: Optional[NightreignItemDropWriter]
+    _worldchrman_slot: Optional[int]
+    _hub_exit_time: Optional[float]
 
     _last_pulse: Optional[int]
     _synced_flags: set
     _last_overlay_state: Optional[tuple]
+    _delivered_weapon_keys: set
+    _delivered_talisman_keys: set
+    _locked_boss_warned: bool
 
     def __init__(self, server_address: Optional[str], password: Optional[str]):
         super().__init__(server_address, password)
@@ -88,15 +120,23 @@ class NightreignContext(CommonContext):
         self.checked_location_ids = set()
         self.slot_data = {}
         self.gate_boss_access = False
+        self.randomize_weapons = False
+        self.randomize_talismans = False
         self.freed_nightlords = set()
         self.per_character_checks = False
         self.goal = "all_bosses"
         self.goal_groups = []
         self.writer = None
         self.overlay = None
+        self.item_drop_writer = None
+        self._worldchrman_slot = None
+        self._hub_exit_time = None
         self._last_pulse = None
         self._synced_flags = set()
         self._last_overlay_state = None
+        self._delivered_weapon_keys = set()
+        self._delivered_talisman_keys = set()
+        self._locked_boss_warned = False
 
     def run_gui(self):
 
@@ -126,6 +166,13 @@ class NightreignContext(CommonContext):
             # it sets this itself here.
             self.slot_data = args.get("slot_data", {}) or {}
             self.gate_boss_access = bool(self.slot_data.get("gate_boss_access", False))
+            # slot_data keys are "receive_weapons"/"receive_talismans" - see Options.py's
+            # ReceiveWeapons/ReceiveTalismans and __init__.py's fill_slot_data(). Not
+            # "randomize_weapons"/"randomize_talismans" (this attribute's own name) - those keys
+            # never existed in slot_data, so this previously always fell back to False regardless
+            # of the player's actual YAML settings, silently disabling the whole feature.
+            self.randomize_weapons = bool(self.slot_data.get("receive_weapons", False))
+            self.randomize_talismans = bool(self.slot_data.get("receive_talismans", False))
             self.freed_nightlords = set(
                 starting_free_nightlords(self.slot_data.get("starting_boss", "Tricephalos"))
             )
@@ -160,10 +207,19 @@ class NightreignContext(CommonContext):
             # would leave them permanently unbuilt for the rest of the session.
             self._ensure_gating_ready()
             asyncio.create_task(self._sync_event_flags())
+            # Same race as gating above: the game process may already be attached from before
+            # this connect, so build the item-drop writer here too, not just in poll_loop.
+            self._ensure_item_drop_ready()
+            self._ensure_animation_ready()
 
         if cmd == "ReceivedItems":
             if self.gate_boss_access:
                 asyncio.create_task(self._sync_event_flags())
+            # No action needed here for randomize_weapons/randomize_talismans -
+            # _pending_drop_keys() recomputes from self.items_received fresh every time
+            # poll_loop's hub-exit edge fires, so a newly received "Randomized Weapon"/
+            # "Randomized Talisman" is picked up automatically on the next Expedition entry
+            # without any bookkeeping needed at receive time.
 
         if cmd == "RoomUpdate":
             # ctx.missing_locations is updated (by the base on_package
@@ -254,6 +310,27 @@ class NightreignContext(CommonContext):
             self.overlay.start()
             logger.info("Boss-gating overlay started (pid=%s).", self.reader.pm.process_id)
 
+    def _warn_if_boss_locked(self, boss_name: str) -> None:
+        """Logs (and records to run state) an Expedition started on a Nightlord whose Access item
+        this slot hasn't received yet. gate_boss_access's flag write is all-or-nothing (see the
+        module comment above _owned_item_names) - receiving any one Access item reveals all 6
+        secondary bosses in the game's own menu, so nothing in-game stops the player from
+        selecting one they don't actually have Access to. The overlay already shows this
+        passively; this is the same check surfaced as a log line for the "basically wasting their
+        run" case the player might not notice mid-run."""
+        access_name = f"{boss_name} Access"
+        if access_name not in ACCESS_ITEM_EVENT_FLAGS or access_name in self._owned_item_names():
+            return
+        logger.warning(
+            "Expedition started on %s, but its Access item hasn't been received yet for this "
+            "slot - this Nightlord is still locked for AP purposes.", boss_name
+        )
+        self._append_event({
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "type": "locked_boss_attempt",
+            "boss": boss_name,
+        })
+
     def _try_build_writer(self) -> None:
         try:
             ptr_slot, base_a_addr = self.reader.resolve_event_flag_targets()
@@ -265,6 +342,161 @@ class NightreignContext(CommonContext):
         self.writer = NightreignMemoryWriter(self.reader.pm, ptr_slot, base_a_addr)
         logger.info("Boss-gating writer resolved (ptr_slot=0x%X, base_a=0x%X).",
                     ptr_slot, base_a_addr)
+
+    # --- Randomized item-drop write path (weapons and talismans) ---
+    #
+    # Off unless slot_data says randomize_weapons and/or randomize_talismans is on for this slot.
+    # A received "Randomized Weapon"/"Randomized Talisman" filler item is deterministically
+    # rolled into a real item (see _roll_weapon_drop/_roll_talisman_drop) and dropped on the
+    # ground as soon as poll_loop confirms both "in_hub is False" (in an Expedition) and "not
+    # is_flying_animation(...)" (grounded, not mid-flight) - not immediately on receipt, since
+    # there's no safe way to drop an item while in the hub/menu or mid-air. One item_drop_writer
+    # is shared by both - memory_writer.py's drop_item() is item-type agnostic (category comes
+    # from the item id itself), so there's no need for a second write path.
+
+    def _ensure_item_drop_ready(self) -> None:
+        """Same "build once both an option and the game connection are known" shape as
+        _ensure_gating_ready, for the same race-condition reason - called from both here and
+        poll_loop's connect-transition. A no-op once the writer already exists."""
+        if (not (self.randomize_weapons or self.randomize_talismans) or not self.reader.connected
+                or self.item_drop_writer is not None):
+            return
+        try:
+            targets = self.reader.resolve_item_drop_targets()
+        except PointerNotFoundError as e:
+            logger.error("Randomized item-drop write path unavailable (%s) - disabling "
+                         "randomize_weapons/randomize_talismans this session, the read-only "
+                         "tracker is unaffected.", e)
+            self.randomize_weapons = False
+            self.randomize_talismans = False
+            return
+        self.item_drop_writer = NightreignItemDropWriter(self.reader.pm, targets)
+        logger.info("Randomized item-drop writer resolved.")
+
+    def _ensure_animation_ready(self) -> None:
+        """Same "build once both an option and the game connection are known" shape as
+        _ensure_item_drop_ready/_ensure_gating_ready, for the same race-condition reason - called
+        from both here and poll_loop's connect-transition. A no-op once already resolved. Without
+        this, delivery can't tell "in an Expedition but mid-flight" apart from "grounded", so a
+        resolve failure disables randomize_weapons/randomize_talismans for the session rather than
+        risk delivering (or crashing) mid-air - same conservative precedent as
+        _ensure_item_drop_ready's own AOB failure handling."""
+        if (not (self.randomize_weapons or self.randomize_talismans) or not self.reader.connected
+                or self._worldchrman_slot is not None):
+            return
+        try:
+            self._worldchrman_slot = self.reader.resolve_current_animation_target()
+        except PointerNotFoundError as e:
+            logger.error("Flight-animation read path unavailable (%s) - disabling "
+                         "randomize_weapons/randomize_talismans this session, the read-only "
+                         "tracker is unaffected.", e)
+            self.randomize_weapons = False
+            self.randomize_talismans = False
+
+    def _pending_drop_keys(self, item_name: str, delivered_keys: set) -> set:
+        """(index, player) keys for every received `item_name` filler item not yet delivered -
+        recomputed fresh from self.items_received each call rather than tracked incrementally,
+        the same "diff against what's already done" shape as _sync_event_flags. Keyed on each
+        item's position within items_received, not (location, player) - a location-based key
+        breaks for any item sent outside a real location check (e.g. the server's !getitem admin
+        command, which always sends location=-1), since every such item would then collide on the
+        same key and get deduped away after the first one delivers. items_received's order is
+        stable across reconnects (the server always replays the same full history), so this stays
+        just as resumable as the location-based key was."""
+        received = {
+            (index, i.player) for index, i in enumerate(self.items_received)
+            if lookup_id_to_name.get(i.item) == item_name
+        }
+        return received - delivered_keys
+
+    def _roll_weapon_drop(self, index: int, player: int) -> dict:
+        """Deterministic roll for one "Randomized Weapon" filler instance, seeded off which
+        received-item instance sent it (seed_name + index + player) rather than delivery order or
+        timing - so a reconnect, a retried drop, or a delayed Expedition entry always reproduces
+        the exact same weapon instead of re-rolling. Every axis is independently randomized per
+        the project's design discussion: weapon id (uniform over game_data.WEAPON_TABLE),
+        upgrade_level (weighted via game_data.roll_upgrade_tier - see its own comment for the
+        band shape), weapon_art and wep_effect (uniform, including a "None" outcome so not every
+        drop is maximally loaded - left unweighted deliberately, so "None" is roughly 1-in-131),
+        and effect_tier (weighted via game_data.roll_effect_tier, same band-percentile idea as
+        upgrade_level - memory_writer.py's drop_item already discards this whenever wep_effect is
+        None or the rolled effect's own cap is lower, so no extra logic is needed here to keep it
+        valid). magic_skill_1/2 are left at "None" - narrower in scope (only staff/seal weapons
+        use them) and out of scope for this pass; ask if you want those randomized too.
+
+        roll_upgrade_tier()'s result is an ABSOLUTE target tier (0=Default/1=Blue/2=Purple/
+        3=Orange), not a raw amount to add - some weapon ids in WEAPON_TABLE are already partway
+        up that scale in their only obtainable form (see game_data.py's WEAPON_NATURAL_TIER
+        comment - live-confirmed via "Ant's Skull Plate", which drops naturally Purple), so the
+        upgrade_level actually requested from drop_item() is only the gap above that weapon's own
+        natural floor, never negative. memory_writer.py's _clamp_upgrade_tier still applies on top
+        of this for the separate, orthogonal concern of a weapon's own max reinforcement ceiling.
+        """
+        rng = random.Random(f"{self.seed_name}:{index}:{player}:weapon")
+        item_id = rng.choice(list(WEAPON_TABLE))
+        target_tier = roll_upgrade_tier(rng.randint(0, 100))
+        return {
+            "item_id": item_id,
+            "upgrade_level": max(0, target_tier - natural_weapon_tier(item_id)),
+            "weapon_art": rng.choice([-1] + list(WEAPON_ART_TABLE)),
+            "wep_effect": rng.choice([-1] + list(EFFECT_CAP_MAP)),
+            "effect_tier": roll_effect_tier(rng.randint(0, 100)),
+        }
+
+    def _roll_talisman_drop(self, index: int, player: int) -> dict:
+        """Deterministic roll for one "Randomized Talisman" filler instance, same seeding idea as
+        _roll_weapon_drop (seed_name + index + player, so retries/reconnects reproduce the same
+        talisman rather than re-rolling) but much simpler: talismans have no upgrade tier, Ash of
+        War, or affinity to roll - just a uniform pick over game_data.TALISMAN_TABLE. Every other
+        drop_item() argument is left at its default ("none"/no-op for a weapon-only field), which
+        memory_writer.py's drop_item/the source CT script's dropItem() both already skip entirely
+        for a non-Weapon item type.
+        """
+        rng = random.Random(f"{self.seed_name}:{index}:{player}:talisman")
+        return {"item_id": rng.choice(list(TALISMAN_TABLE))}
+
+    async def _deliver_pending_drops(
+        self, item_name: str, roll_fn, delivered_keys: set, event_type: str, log_label: str
+    ) -> None:
+        if self.item_drop_writer is None:
+            return
+        pending = self._pending_drop_keys(item_name, delivered_keys)
+        if not pending:
+            return
+        loop = asyncio.get_running_loop()
+        for index, player in pending:
+            roll = roll_fn(index, player)
+            ok = await loop.run_in_executor(
+                None, functools.partial(self.item_drop_writer.drop_item, **roll)
+            )
+            if ok:
+                delivered_keys.add((index, player))
+                self._append_event({
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "type": event_type,
+                    "index": index,
+                    "player": player,
+                    **roll,
+                })
+                logger.info("Dropped %s 0x%X for index=%s player=%s.",
+                            log_label, roll["item_id"], index, player)
+            else:
+                # Not removed from the pending set - _pending_drop_keys() will offer it again on
+                # the next Expedition entry, matching _sync_event_flags's retry shape.
+                logger.warning("%s drop skipped for index=%s player=%s - game not ready, "
+                                "will retry on next Expedition entry.", log_label, index, player)
+
+    async def _deliver_pending_weapons(self) -> None:
+        await self._deliver_pending_drops(
+            "Randomized Weapon", self._roll_weapon_drop, self._delivered_weapon_keys,
+            "weapon_drop", "randomized weapon"
+        )
+
+    async def _deliver_pending_talismans(self) -> None:
+        await self._deliver_pending_drops(
+            "Randomized Talisman", self._roll_talisman_drop, self._delivered_talisman_keys,
+            "talisman_drop", "randomized talisman"
+        )
 
     # --- Per-run local state file ---
     #
@@ -296,13 +528,25 @@ class NightreignContext(CommonContext):
                 with open(self.run_state_path, "r", encoding="utf-8") as f:
                     data = json.load(f)
                 self.checked_location_ids = {int(x) for x in data.get("checked_locations", [])}
+                self._delivered_weapon_keys = {
+                    (int(index), int(player))
+                    for index, player in data.get("delivered_weapon_keys", [])
+                }
+                self._delivered_talisman_keys = {
+                    (int(index), int(player))
+                    for index, player in data.get("delivered_talisman_keys", [])
+                }
             except (json.JSONDecodeError, OSError, ValueError) as e:
                 logger.warning(
                     "Could not read existing Nightreign run state at %s: %s", self.run_state_path, e
                 )
                 self.checked_location_ids = set()
+                self._delivered_weapon_keys = set()
+                self._delivered_talisman_keys = set()
         else:
             self.checked_location_ids = set()
+            self._delivered_weapon_keys = set()
+            self._delivered_talisman_keys = set()
             self._write_run_state(seed_name, slot_name, events=[])
 
         logger.info("Nightreign run state file: %s", self.run_state_path)
@@ -312,6 +556,8 @@ class NightreignContext(CommonContext):
             "seed_name": seed_name,
             "slot_name": slot_name,
             "checked_locations": sorted(self.checked_location_ids),
+            "delivered_weapon_keys": sorted(list(key) for key in self._delivered_weapon_keys),
+            "delivered_talisman_keys": sorted(list(key) for key in self._delivered_talisman_keys),
             "events": events,
         }
         with open(self.run_state_path, "w", encoding="utf-8") as f:
@@ -327,9 +573,14 @@ class NightreignContext(CommonContext):
         except (FileNotFoundError, json.JSONDecodeError, OSError):
             data = {
                 "seed_name": seed_name, "slot_name": slot_name,
-                "checked_locations": [], "events": [],
+                "checked_locations": [], "delivered_weapon_keys": [],
+                "delivered_talisman_keys": [], "events": [],
             }
         data["checked_locations"] = sorted(self.checked_location_ids)
+        data["delivered_weapon_keys"] = sorted(list(key) for key in self._delivered_weapon_keys)
+        data["delivered_talisman_keys"] = sorted(
+            list(key) for key in self._delivered_talisman_keys
+        )
         data.setdefault("events", []).append(event)
         with open(self.run_state_path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
@@ -348,12 +599,18 @@ class NightreignContext(CommonContext):
                     # trusting state from a writer that no longer exists.
                     self.writer = None
                     self._synced_flags.clear()
+                    self.item_drop_writer = None
+                    self._worldchrman_slot = None
+                    self._hub_exit_time = None
+                    self._locked_boss_warned = False
                     try:
                         if self.reader.connect():
                             logger.info("Connected to nightreign.exe")
                             self._ensure_gating_ready()
                             if self.gate_boss_access:
                                 asyncio.create_task(self._sync_event_flags())
+                            self._ensure_item_drop_ready()
+                            self._ensure_animation_ready()
                         else:
                             await asyncio.sleep(RECONNECT_INTERVAL)
                             continue
@@ -377,27 +634,84 @@ class NightreignContext(CommonContext):
                     # transition) right when the writer was first built. A no-op once synced.
                     await self._sync_event_flags()
 
+                # Read once per tick and shared below - True in hub/menu/loading, False in an
+                # active run, None if transiently unreadable (e.g. a scene transition).
+                in_hub = self.reader.read_hub_state()
+
+                if self.gate_boss_access:
+                    if in_hub:
+                        # Back in the hub (or a fresh/unreadable tick before the first Expedition
+                        # entry this connection) - re-arm so the next Expedition entry gets its
+                        # own check, one warning per run rather than once ever.
+                        self._locked_boss_warned = False
+                    elif in_hub is False and not self._locked_boss_warned:
+                        # boss_id can lag a tick or two behind the hub-exit edge (same drift the
+                        # win-detection path tolerates) - read_boss_id() returning "unset"/
+                        # "unreadable" here just means try again next tick, not a bad Expedition.
+                        boss = self.reader.read_boss_id()
+                        if boss.status == "matched":
+                            self._locked_boss_warned = True
+                            self._warn_if_boss_locked(boss.name)
+
+                if self.randomize_weapons or self.randomize_talismans:
+                    # Tracks how long we've continuously seen in_hub is False, so the settle-time
+                    # check below can tell "just exited the hub" apart from "been in the
+                    # Expedition a while" - reset on True so re-entering a fresh Expedition later
+                    # gets its own full settle window rather than reusing an old timestamp. Left
+                    # untouched while in_hub is None (transiently unreadable), same conservative
+                    # handling as _locked_boss_warned's re-arm logic above.
+                    if in_hub:
+                        self._hub_exit_time = None
+                    elif in_hub is False and self._hub_exit_time is None:
+                        self._hub_exit_time = time.monotonic()
+
+                if (
+                    (self.randomize_weapons or self.randomize_talismans)
+                    and in_hub is False
+                    and self._hub_exit_time is not None
+                    and time.monotonic() - self._hub_exit_time >= EXPEDITION_ENTRY_SETTLE_SECONDS
+                ):
+                    # Level-triggered on every tick, not edge-triggered on hub-exit: a pending drop
+                    # needs BOTH "confirmed in an Expedition" and "confirmed not mid-flight" to
+                    # actually land (live-tested - see game_data.py's WORLDCHRMAN_AOB/
+                    # is_flying_animation comments) - the player can still be mid-air from a
+                    # mid-run flight point at the exact tick this fires, hence the animation check
+                    # below too, on top of the EXPEDITION_ENTRY_SETTLE_SECONDS backstop for the
+                    # airdrop specifically (see that constant's comment). Retrying every tick while
+                    # a drop is still pending is safe: _delivered_weapon_keys/_delivered_talisman_keys
+                    # already prevent re-sending once a drop succeeds (see
+                    # _pending_drop_keys/_deliver_pending_drops).
+                    animation = (
+                        self.reader.read_current_animation(self._worldchrman_slot)
+                        if self._worldchrman_slot is not None else None
+                    )
+                    if animation is not None and not is_flying_animation(animation):
+                        if self.randomize_weapons:
+                            await self._deliver_pending_weapons()
+                        if self.randomize_talismans:
+                            await self._deliver_pending_talismans()
+
                 if self.gate_boss_access and self.overlay is not None:
                     owned_names = self._owned_item_names()
                     locked_names = [
                         name for name in ACCESS_NIGHTLORDS if f"{name} Access" not in owned_names
                     ]
-                    in_hub = bool(self.reader.read_hub_state())
                     # pid is refreshed here too, not just at overlay construction - the game
                     # process can restart mid-session and reconnect under a new pid, but this
                     # already-running overlay is never torn down/rebuilt for that (see the
                     # `self.overlay is None` guard above), so without this it would keep hunting
                     # for a dead process's window and stay invisible forever.
-                    self.overlay.state.update(in_hub, locked_names, self.reader.pm.process_id)
+                    self.overlay.state.update(bool(in_hub), locked_names, self.reader.pm.process_id)
 
                     # Logged only on change, not every tick - lets a log dump explain exactly
                     # why the overlay panel was/wasn't visible at any point (it only draws
                     # while in_hub and locked_names is non-empty - see overlay.py's _tick),
                     # without spamming a line 4x/second.
-                    state_key = (in_hub, tuple(locked_names))
+                    state_key = (bool(in_hub), tuple(locked_names))
                     if state_key != self._last_overlay_state:
                         self._last_overlay_state = state_key
-                        logger.info("Overlay state changed: in_hub=%s locked=%s", in_hub, locked_names)
+                        logger.info("Overlay state changed: in_hub=%s locked=%s", bool(in_hub),
+                                    locked_names)
             except Exception:
                 logger.exception("Error in Nightreign poll loop")
             await asyncio.sleep(POLL_INTERVAL)

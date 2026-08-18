@@ -78,6 +78,15 @@ class NightreignWorld(World):
         # completion condition" requirement.
         self.multiworld.completion_condition[self.player] = lambda state: True
 
+        if not self.options.receive_weapons and not self.options.receive_talismans:
+            # There is no other flavorful filler item left (Trophy items were removed once
+            # Randomized Weapon/Talisman gave real in-game drops) - with both options off,
+            # get_filler_item_name() would have an empty pool to choose from.
+            raise OptionError(
+                f"{self.player_name}: at least one of receive_weapons/receive_talismans must be "
+                "enabled, since filler items are drawn from those two pools."
+            )
+
         self.starting_boss = NIGHTLORDS[self.options.starting_boss.value]
         self.freed_nightlords = set(starting_free_nightlords(self.starting_boss))
 
@@ -206,11 +215,18 @@ class NightreignWorld(World):
         return NightreignItem(name, data.classification, data.code, self.player)
 
     def get_filler_item_name(self) -> str:
-        return self.random.choice(FILLER_ITEM_NAMES)
+        names = FILLER_ITEM_NAMES
+        if self.options.receive_weapons:
+            names = names + ["Randomized Weapon"]
+        if self.options.receive_talismans:
+            names = names + ["Randomized Talisman"]
+        return self.random.choice(names)
 
     def fill_slot_data(self) -> dict:
         return {
             "gate_boss_access": bool(self.options.gate_boss_access),
+            "receive_weapons": bool(self.options.receive_weapons),
+            "receive_talismans": bool(self.options.receive_talismans),
             "starting_boss": self.starting_boss,
             "bosses_with_characters": self.options.bosses_with_characters.current_key,
             "goal": self.options.goal.current_key,

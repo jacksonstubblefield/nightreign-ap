@@ -39,6 +39,9 @@ try:
         TLS_FAKE_CONTEXT_RVA,
         TLS_SLOT_FETCHER_ITEMDROP_AOB,
         UNSET_SENTINEL,
+        WORLDCHRMAN_AOB,
+        WORLDCHRMAN_ANIM_FINAL_OFFSET,
+        WORLDCHRMAN_ANIM_OFFSETS,
     )
 except ImportError:
     # Run directly as a script (python memory_reader.py), not as part of the
@@ -63,6 +66,9 @@ except ImportError:
         TLS_FAKE_CONTEXT_RVA,
         TLS_SLOT_FETCHER_ITEMDROP_AOB,
         UNSET_SENTINEL,
+        WORLDCHRMAN_AOB,
+        WORLDCHRMAN_ANIM_FINAL_OFFSET,
+        WORLDCHRMAN_ANIM_OFFSETS,
     )
 
 PROCESS_NAME = "nightreign.exe"
@@ -307,6 +313,37 @@ class NightreignMemoryReader:
             aboba_func_addr=aboba_func_addr,
             tls_fake_context_addr=tls_fake_context_addr,
         )
+
+    def resolve_current_animation_target(self) -> int:
+        """Resolves the WorldChrMan pointer slot for read_current_animation() - see
+        game_data.py's WORLDCHRMAN_AOB comment. Same call-only-when-wanted convention as
+        resolve_event_flag_targets()/resolve_item_drop_targets(): never called from connect(), so
+        a patch breaking only this AOB can't take down the read-only tracker for players who never
+        opt into randomize_weapons/randomize_talismans."""
+        if not self.connected:
+            raise PointerNotFoundError("not connected - call connect() first")
+        return self._resolve_pointer_slot(self.pm, WORLDCHRMAN_AOB)
+
+    def read_current_animation(self, worldchrman_slot: int) -> Optional[int]:
+        """Local player's live "Current Animation" int (see game_data.py's WORLDCHRMAN_AOB
+        comment for the live-tested value bands). Re-walks the whole pointer chain fresh on every
+        call rather than caching any intermediate pointer - WorldChrMan's own live object address
+        was confirmed to change across hub<->Expedition scene transitions, unlike GameMan/
+        GameDataMan's. Deliberately doesn't use _safe_read_qword/_safe_read_int (which disconnect()
+        on any read failure) - a transiently-null hop partway through this deeper, more volatile
+        chain (e.g. mid-reallocation during a scene transition) is expected and shouldn't be
+        treated as "the game process died" the way a failed GameMan-slot read would be."""
+        try:
+            ptr = self.pm.read_ulonglong(worldchrman_slot)
+            if not ptr:
+                return None
+            for offset in WORLDCHRMAN_ANIM_OFFSETS:
+                ptr = self.pm.read_ulonglong(ptr + offset)
+                if not ptr:
+                    return None
+            return self.pm.read_int(ptr + WORLDCHRMAN_ANIM_FINAL_OFFSET)
+        except (pymem.exception.MemoryReadError, pymem.exception.WinAPIError):
+            return None
 
     def _safe_read_qword(self, address: int) -> Optional[int]:
         try:

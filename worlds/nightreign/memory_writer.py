@@ -140,7 +140,12 @@ def _resolve_remote_tls_set_value(pm: pymem.Pymem) -> int:
     the exact same base (e.g. different integrity levels)."""
     local_kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     local_func_addr = ctypes.cast(local_kernel32.TlsSetValue, ctypes.c_void_p).value
-    local_base = ctypes.windll.kernel32.GetModuleHandleW("kernel32.dll")
+    # ctypes' default assumed restype for a windll-wrapped call is c_int (32-bit signed) - without
+    # this, GetModuleHandleW's real 64-bit HMODULE return value gets truncated/sign-extended into
+    # garbage, corrupting every address derived from it below.
+    local_kernel32.GetModuleHandleW.restype = ctypes.c_void_p
+    local_kernel32.GetModuleHandleW.argtypes = [ctypes.c_wchar_p]
+    local_base = local_kernel32.GetModuleHandleW("kernel32.dll")
     remote_module = pymem.process.module_from_name(pm.process_handle, "kernel32.dll")
     return local_func_addr - local_base + remote_module.lpBaseOfDll
 

@@ -9,9 +9,12 @@ randomize_talismans is on, received "Randomized Weapon"/"Randomized Talisman"
 filler items are rolled into a real weapon/talisman client-side (see
 _roll_weapon_drop/_roll_talisman_drop) and dropped on the ground via
 memory_writer.py's NightreignItemDropWriter (shared by both - it's item-type
-agnostic) the next time an Expedition is entered. With all three options off,
-received items have no in-game effect - the base CommonContext/CLI/GUI
-machinery just logs them, same as before any was added.
+agnostic) as soon as the player is confirmed both in an Expedition and not
+mid-flight (see game_data.py's WORLDCHRMAN_AOB/is_flying_animation - the drop
+function needs a grounded position, so this is checked every poll tick, not
+just once on Expedition entry). With all three options off, received items
+have no in-game effect - the base CommonContext/CLI/GUI machinery just logs
+them, same as before any was added.
 """
 
 from __future__ import annotations
@@ -34,8 +37,8 @@ from CommonClient import (ClientCommandProcessor, CommonContext, get_base_parser
 from NetUtils import ClientStatus
 
 from .game_data import (ACCESS_ITEM_EVENT_FLAGS, ACCESS_NIGHTLORDS, EFFECT_CAP_MAP,
-                        TALISMAN_TABLE, WEAPON_ART_TABLE, WEAPON_TABLE, roll_effect_tier,
-                        roll_upgrade_tier, starting_free_nightlords)
+                        TALISMAN_TABLE, WEAPON_ART_TABLE, WEAPON_TABLE, is_flying_animation,
+                        roll_effect_tier, roll_upgrade_tier, starting_free_nightlords)
 from .Items import lookup_id_to_name
 from .Locations import location_name, location_name_boss_only, location_name_to_id
 from .memory_reader import NightreignMemoryReader, PointerNotFoundError
@@ -87,11 +90,11 @@ class NightreignContext(CommonContext):
     writer: Optional[NightreignMemoryWriter]
     overlay: Optional[NightreignOverlay]
     item_drop_writer: Optional[NightreignItemDropWriter]
+    _worldchrman_slot: Optional[int]
 
     _last_pulse: Optional[int]
     _synced_flags: set
     _last_overlay_state: Optional[tuple]
-    _last_hub_state: Optional[bool]
     _delivered_weapon_keys: set
     _delivered_talisman_keys: set
 
@@ -112,10 +115,10 @@ class NightreignContext(CommonContext):
         self.writer = None
         self.overlay = None
         self.item_drop_writer = None
+        self._worldchrman_slot = None
         self._last_pulse = None
         self._synced_flags = set()
         self._last_overlay_state = None
-        self._last_hub_state = None
         self._delivered_weapon_keys = set()
         self._delivered_talisman_keys = set()
 
@@ -186,6 +189,7 @@ class NightreignContext(CommonContext):
             # Same race as gating above: the game process may already be attached from before
             # this connect, so build the item-drop writer here too, not just in poll_loop.
             self._ensure_item_drop_ready()
+            self._ensure_animation_ready()
 
         if cmd == "ReceivedItems":
             if self.gate_boss_access:
@@ -302,11 +306,11 @@ class NightreignContext(CommonContext):
     # Off unless slot_data says randomize_weapons and/or randomize_talismans is on for this slot.
     # A received "Randomized Weapon"/"Randomized Talisman" filler item is deterministically
     # rolled into a real item (see _roll_weapon_drop/_roll_talisman_drop) and dropped on the
-    # ground the next time the hub->active-run edge fires in poll_loop (i.e. the next Expedition
-    # entry) - not immediately on receipt, since there's no safe way to drop an item while in the
-    # hub/menu. One item_drop_writer is shared by both - memory_writer.py's drop_item() is
-    # item-type agnostic (category comes from the item id itself), so there's no need for a
-    # second write path.
+    # ground as soon as poll_loop confirms both "in_hub is False" (in an Expedition) and "not
+    # is_flying_animation(...)" (grounded, not mid-flight) - not immediately on receipt, since
+    # there's no safe way to drop an item while in the hub/menu or mid-air. One item_drop_writer
+    # is shared by both - memory_writer.py's drop_item() is item-type agnostic (category comes
+    # from the item id itself), so there's no need for a second write path.
 
     def _ensure_item_drop_ready(self) -> None:
         """Same "build once both an option and the game connection are known" shape as
@@ -326,6 +330,26 @@ class NightreignContext(CommonContext):
             return
         self.item_drop_writer = NightreignItemDropWriter(self.reader.pm, targets)
         logger.info("Randomized item-drop writer resolved.")
+
+    def _ensure_animation_ready(self) -> None:
+        """Same "build once both an option and the game connection are known" shape as
+        _ensure_item_drop_ready/_ensure_gating_ready, for the same race-condition reason - called
+        from both here and poll_loop's connect-transition. A no-op once already resolved. Without
+        this, delivery can't tell "in an Expedition but mid-flight" apart from "grounded", so a
+        resolve failure disables randomize_weapons/randomize_talismans for the session rather than
+        risk delivering (or crashing) mid-air - same conservative precedent as
+        _ensure_item_drop_ready's own AOB failure handling."""
+        if (not (self.randomize_weapons or self.randomize_talismans) or not self.reader.connected
+                or self._worldchrman_slot is not None):
+            return
+        try:
+            self._worldchrman_slot = self.reader.resolve_current_animation_target()
+        except PointerNotFoundError as e:
+            logger.error("Flight-animation read path unavailable (%s) - disabling "
+                         "randomize_weapons/randomize_talismans this session, the read-only "
+                         "tracker is unaffected.", e)
+            self.randomize_weapons = False
+            self.randomize_talismans = False
 
     def _pending_drop_keys(self, item_name: str, delivered_keys: set) -> set:
         """(location, player) keys for every received `item_name` filler item not yet delivered -
@@ -518,7 +542,7 @@ class NightreignContext(CommonContext):
                     self.writer = None
                     self._synced_flags.clear()
                     self.item_drop_writer = None
-                    self._last_hub_state = None
+                    self._worldchrman_slot = None
                     try:
                         if self.reader.connect():
                             logger.info("Connected to nightreign.exe")
@@ -526,6 +550,7 @@ class NightreignContext(CommonContext):
                             if self.gate_boss_access:
                                 asyncio.create_task(self._sync_event_flags())
                             self._ensure_item_drop_ready()
+                            self._ensure_animation_ready()
                         else:
                             await asyncio.sleep(RECONNECT_INTERVAL)
                             continue
@@ -553,17 +578,25 @@ class NightreignContext(CommonContext):
                 # active run, None if transiently unreadable (e.g. a scene transition).
                 in_hub = self.reader.read_hub_state()
 
-                if (self.randomize_weapons or self.randomize_talismans) and in_hub is not None:
-                    # Only a *confirmed* True->False read counts as "just entered an Expedition" -
-                    # deliberately not coercing a transient None to False here (unlike the
-                    # overlay's bool(in_hub) below), since that could misfire a real remote-thread
-                    # dispatch off a momentarily-unreadable read instead of a genuine transition.
-                    if self._last_hub_state is True and in_hub is False:
+                if (self.randomize_weapons or self.randomize_talismans) and in_hub is False:
+                    # Level-triggered on every tick, not edge-triggered on hub-exit: a pending drop
+                    # needs BOTH "confirmed in an Expedition" and "confirmed not mid-flight" to
+                    # actually land (live-tested - see game_data.py's WORLDCHRMAN_AOB/
+                    # is_flying_animation comments) - the player can still be mid-air from the
+                    # ~10s expedition-entry flight-in, or using a mid-run flight point, at the
+                    # exact tick in_hub first flips False. Retrying every tick while a drop is
+                    # still pending is safe: _delivered_weapon_keys/_delivered_talisman_keys
+                    # already prevent re-sending once a drop succeeds (see
+                    # _pending_drop_keys/_deliver_pending_drops).
+                    animation = (
+                        self.reader.read_current_animation(self._worldchrman_slot)
+                        if self._worldchrman_slot is not None else None
+                    )
+                    if animation is not None and not is_flying_animation(animation):
                         if self.randomize_weapons:
                             await self._deliver_pending_weapons()
                         if self.randomize_talismans:
                             await self._deliver_pending_talismans()
-                    self._last_hub_state = in_hub
 
                 if self.gate_boss_access and self.overlay is not None:
                     owned_names = self._owned_item_names()

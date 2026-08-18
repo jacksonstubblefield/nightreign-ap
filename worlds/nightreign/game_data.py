@@ -115,6 +115,36 @@ ABOBA_FUNC_OFFSET = -0x7A
 # function - see memory_writer.py's module docstring for why this is needed at all.
 TLS_FAKE_CONTEXT_RVA = 0x3C1F918
 
+# --- Current Animation read path (flight gating for the item-drop write path) ---
+#
+# WorldChrMan pointer-slot AOB, from the user's CE table - same `mov reg,[rip+disp32]` pointer-slot
+# shape as GAMEMAN_AOB/GAMEDATAMAN_AOB in memory_reader.py. WorldChrMan's own live object address
+# was confirmed live to change across scene transitions (hub<->Expedition), unlike GameMan/
+# GameDataMan's - so callers must re-walk the whole chain from this slot on every read rather than
+# caching any intermediate pointer (see memory_reader.py's read_current_animation()).
+WORLDCHRMAN_AOB = "48 8B 05 ?? ?? ?? ?? 0F 28 F1 48 85 C0"
+
+# [[[WorldChrMan+0x174E8]+0x1B8]+0x80]+0x98 is the local player's live "Current Animation" int -
+# live-tested against the running game across two sessions (single flight, then 3 flight-point
+# trips + jumps + combat) and found to fall into four cleanly-separated-by-magnitude bands:
+# ~2,000,000-2,999,999 (grounded movement - run/roll/sprint), ~20,000-29,999 (intro/hub/cutscene
+# animations), ~60,000-69,999 (flying), and 8-9-digit values (attacks). Used to gate the
+# randomized item-drop write path (see client.py) - the drop function needs the player to be both
+# in an Expedition and grounded, not mid-flight, to actually land a visible item.
+WORLDCHRMAN_ANIM_OFFSETS = (0x174E8, 0x1B8, 0x80)
+WORLDCHRMAN_ANIM_FINAL_OFFSET = 0x98
+
+# Live-tested flying band was 61020-69410 - kept as a round 60000-69999 range with headroom on
+# both ends rather than the exact observed min/max, since those two sessions can't have sampled
+# every possible flying sub-animation id.
+FLYING_ANIMATION_RANGE = range(60000, 70000)
+
+
+def is_flying_animation(current_animation: int) -> bool:
+    """True if `current_animation` (see WORLDCHRMAN_ANIM_OFFSETS above) falls in the live-tested
+    flying band - used to gate the randomized item-drop write path on the player being grounded."""
+    return current_animation in FLYING_ANIMATION_RANGE
+
 # Weapon affinity/"Gem" (Ash-of-War infusion) id families, grouped by the maximum upgrade tier
 # they're allowed to carry - ported verbatim from the CT script's `capLevels` Lua table. An id
 # not present here has no cap beyond the base game's own.

@@ -1,27 +1,6 @@
 # Elden Ring Nightreign
 
-## Where is the options page?
-
-The [player options page for this game](../player-options) contains all the options you need to configure and export
-a config file.
-
-## What does this randomizer do?
-
-This is an early-alpha **tracker-only** integration for Elden Ring Nightreign. The game itself is not modified and
-nothing is locked or gated in-game - you play a completely normal game. A location check is "defeat Nightlord X as
-character Y", detected by an external client that passively reads the running game's memory (no code injection, no
-game files touched). Received items are flavorful "trophy" items with **no in-game effect** in this version - real
-item/character gating is a separate, unresearched effort for a future version.
-
-## What is considered a location check?
-
-Defeating a given Nightlord while playing as a given character, for every character x Nightlord combination you
-opted into via the `included_characters` and `included_nightlords` options. Defaults to all characters and all
-currently-supported Nightlords.
-
-## When the player receives an item, what happens?
-
-Nothing in-game. You'll see a log message/toast for flavor, but items in this version don't affect the game.
+This is early alpha and these pages are still being developed. No third party mods needed, this runs straight out of the client.
 
 ## What is the goal / victory condition?
 

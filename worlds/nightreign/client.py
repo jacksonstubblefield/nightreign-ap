@@ -17,12 +17,13 @@ import logging
 import os
 import re
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Optional
 
 import colorama
 
 import Utils
-from CommonClient import ClientCommandProcessor, CommonContext, get_base_parser, gui_enabled, server_loop
+from CommonClient import (ClientCommandProcessor, CommonContext, get_base_parser, 
+                          gui_enabled, server_loop)
 from NetUtils import ClientStatus
 
 from .game_data import ACCESS_ITEM_EVENT_FLAGS, ACCESS_NIGHTLORDS, starting_free_nightlords
@@ -64,6 +65,7 @@ class NightreignContext(CommonContext):
     run_state_path: Optional[str]
     checked_location_ids: set
 
+    slot_data: dict
     gate_boss_access: bool
     freed_nightlords: set
     per_character_checks: bool
@@ -71,6 +73,8 @@ class NightreignContext(CommonContext):
     overlay: Optional[NightreignOverlay]
 
     _last_pulse: Optional[int]
+    _synced_flags: set
+    _last_overlay_state: Optional[tuple]
 
     def __init__(self, server_address: Optional[str], password: Optional[str]):
         super().__init__(server_address, password)
@@ -78,12 +82,15 @@ class NightreignContext(CommonContext):
         self.poll_task = None
         self.run_state_path = None
         self.checked_location_ids = set()
+        self.slot_data = {}
         self.gate_boss_access = False
         self.freed_nightlords = set()
         self.per_character_checks = False
         self.writer = None
         self.overlay = None
         self._last_pulse = None
+        self._synced_flags = set()
+        self._last_overlay_state = None
 
     def run_gui(self):
         from kvui import GameManager
@@ -114,7 +121,19 @@ class NightreignContext(CommonContext):
             self.freed_nightlords = set(
                 starting_free_nightlords(self.slot_data.get("starting_boss", "Tricephalos"))
             )
-            self.per_character_checks = self.slot_data.get("check_granularity", "boss") == "boss_and_character"
+            self.per_character_checks = (
+                self.slot_data.get("check_granularity", "boss") == "boss_and_character"
+            )
+            logger.info("gate_boss_access=%s for this slot.", self.gate_boss_access)
+
+            # A flag write only ever confirms that the remote thread was dispatched, not that the
+            # in-game effect actually landed (see memory_writer.py's set_event_flag docstring) - so
+            # treating a past dispatch as permanently done would mean a write that silently had no
+            # visible effect (e.g. fired too early in the hub-load sequence) could never be retried
+            # for the rest of the process's life. Clearing this on every fresh AP connection - not
+            # just on a game-process reconnect (see poll_loop) - turns "disconnect/reconnect the AP
+            # client" into an actual retry path instead of a no-op.
+            self._synced_flags.clear()
 
             self._open_run_state()
             # Replay anything our local state already thinks is checked, in
@@ -124,8 +143,12 @@ class NightreignContext(CommonContext):
             if self.checked_location_ids:
                 asyncio.create_task(self.check_locations(self.checked_location_ids))
             asyncio.create_task(self._maybe_declare_goal())
-            # In case items were already waiting (e.g. a reconnect) and the
-            # game is already attached from a prior connection.
+            # gate_boss_access is only known once this packet arrives, but the game
+            # process may already be attached from before this connect (its own
+            # connect-transition in poll_loop already ran with gate_boss_access still
+            # False at the time) - build the writer/overlay here too, or that ordering
+            # would leave them permanently unbuilt for the rest of the session.
+            self._ensure_gating_ready()
             asyncio.create_task(self._sync_event_flags())
 
         if cmd == "ReceivedItems":
@@ -175,24 +198,51 @@ class NightreignContext(CommonContext):
         if not self.gate_boss_access or self.writer is None:
             return
         owned_names = self._owned_item_names()
-        needed_flags = {flag for name, flag in ACCESS_ITEM_EVENT_FLAGS.items() if name in owned_names}
+        needed_flags = {
+            flag for name, flag in ACCESS_ITEM_EVENT_FLAGS.items() if name in owned_names
+        }
+        needed_flags -= self._synced_flags
         if not needed_flags:
             return
         loop = asyncio.get_running_loop()
         for flag in needed_flags:
             ok = await loop.run_in_executor(None, self.writer.set_event_flag, flag, True)
-            if not ok:
-                logger.warning(f"SetEventFlag({flag}, 1) skipped - game not ready, will retry on next sync.")
+            if ok:
+                self._synced_flags.add(flag)
+                logger.info("SetEventFlag(%s, 1) succeeded.", flag)
+            else:
+                # Not a real "next sync" trigger on its own - freed_nightlords (from
+                # starting_boss) never arrives as a ReceivedItems packet, so without the
+                # per-tick call in poll_loop this would silently never retry.
+                logger.warning(
+                    "SetEventFlag(%s, 1) skipped - game not ready, will retry on next sync.", flag
+                )
+
+    def _ensure_gating_ready(self) -> None:
+        """Builds the writer/overlay once both gate_boss_access and the game connection are
+        known, regardless of which arrived first this session - the game process attaching
+        and the AP 'Connected' packet (which is what sets gate_boss_access) race each other,
+        and either can win. Called from both sides of that race: here and from poll_loop's
+        connect-transition. A no-op once the writer already exists."""
+        if not self.gate_boss_access or not self.reader.connected or self.writer is not None:
+            return
+        self._try_build_writer()
+        if self.writer is not None and self.overlay is None:
+            self.overlay = NightreignOverlay(self.reader.pm.process_id)
+            self.overlay.start()
+            logger.info("Boss-gating overlay started (pid=%s).", self.reader.pm.process_id)
 
     def _try_build_writer(self) -> None:
         try:
             ptr_slot, base_a_addr = self.reader.resolve_event_flag_targets()
         except PointerNotFoundError as e:
-            logger.error(f"Boss-gating write path unavailable ({e}) - disabling gating this "
-                         f"session, the read-only tracker is unaffected.")
+            logger.error("Boss-gating write path unavailable (%s) - disabling gating this "
+                         "session, the read-only tracker is unaffected.", e)
             self.gate_boss_access = False
             return
         self.writer = NightreignMemoryWriter(self.reader.pm, ptr_slot, base_a_addr)
+        logger.info("Boss-gating writer resolved (ptr_slot=0x%X, base_a=0x%X).",
+                    ptr_slot, base_a_addr)
 
     # --- Per-run local state file ---
     #
@@ -214,22 +264,26 @@ class NightreignContext(CommonContext):
         seed_name, slot_name = self._run_state_key()
         directory = Utils.user_path("nightreign")
         os.makedirs(directory, exist_ok=True)
-        filename = f"{_safe_filename_component(seed_name)}_{_safe_filename_component(slot_name)}.json"
+        filename = (
+            f"{_safe_filename_component(seed_name)}_{_safe_filename_component(slot_name)}.json"
+        )
         self.run_state_path = os.path.join(directory, filename)
 
         if os.path.exists(self.run_state_path):
             try:
-                with open(self.run_state_path, "r") as f:
+                with open(self.run_state_path, "r", encoding="utf-8") as f:
                     data = json.load(f)
                 self.checked_location_ids = {int(x) for x in data.get("checked_locations", [])}
             except (json.JSONDecodeError, OSError, ValueError) as e:
-                logger.warning(f"Could not read existing Nightreign run state at {self.run_state_path}: {e}")
+                logger.warning(
+                    "Could not read existing Nightreign run state at %s: %s", self.run_state_path, e
+                )
                 self.checked_location_ids = set()
         else:
             self.checked_location_ids = set()
             self._write_run_state(seed_name, slot_name, events=[])
 
-        logger.info(f"Nightreign run state file: {self.run_state_path}")
+        logger.info("Nightreign run state file: %s", self.run_state_path)
 
     def _write_run_state(self, seed_name: str, slot_name: str, events: list) -> None:
         data = {
@@ -238,7 +292,7 @@ class NightreignContext(CommonContext):
             "checked_locations": sorted(self.checked_location_ids),
             "events": events,
         }
-        with open(self.run_state_path, "w") as f:
+        with open(self.run_state_path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
 
     def _append_event(self, event: dict) -> None:
@@ -246,13 +300,16 @@ class NightreignContext(CommonContext):
             return
         seed_name, slot_name = self._run_state_key()
         try:
-            with open(self.run_state_path, "r") as f:
+            with open(self.run_state_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
         except (FileNotFoundError, json.JSONDecodeError, OSError):
-            data = {"seed_name": seed_name, "slot_name": slot_name, "checked_locations": [], "events": []}
+            data = {
+                "seed_name": seed_name, "slot_name": slot_name,
+                "checked_locations": [], "events": [],
+            }
         data["checked_locations"] = sorted(self.checked_location_ids)
         data.setdefault("events", []).append(event)
-        with open(self.run_state_path, "w") as f:
+        with open(self.run_state_path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
 
     # --- Memory polling ---
@@ -263,22 +320,22 @@ class NightreignContext(CommonContext):
                 if not self.reader.connected:
                     # A stale writer holds addresses from a now-dead process handle - don't let
                     # the next _sync_event_flags() reuse it after a fresh connect rebuilds it.
+                    # Drop synced-flag bookkeeping too, so a fresh connect re-verifies rather than
+                    # trusting state from a writer that no longer exists.
                     self.writer = None
+                    self._synced_flags.clear()
                     try:
                         if self.reader.connect():
                             logger.info("Connected to nightreign.exe")
+                            self._ensure_gating_ready()
                             if self.gate_boss_access:
-                                self._try_build_writer()
                                 asyncio.create_task(self._sync_event_flags())
-                                if self.writer is not None and self.overlay is None:
-                                    self.overlay = NightreignOverlay(self.reader.pm.process_id)
-                                    self.overlay.start()
                         else:
                             await asyncio.sleep(RECONNECT_INTERVAL)
                             continue
                     except PointerNotFoundError as e:
-                        logger.error(f"{e} - is the game up to date with this client? Retrying in "
-                                    f"{BUILD_MISMATCH_BACKOFF}s.")
+                        logger.error("%s - is the game up to date with this client? Retrying in "
+                                    "%ss.", e, BUILD_MISMATCH_BACKOFF)
                         await asyncio.sleep(BUILD_MISMATCH_BACKOFF)
                         continue
 
@@ -288,12 +345,35 @@ class NightreignContext(CommonContext):
                 if pulse is not None:
                     self._last_pulse = pulse
 
+                if self.gate_boss_access and self.writer is not None:
+                    # Retried every tick, not just on Connected/ReceivedItems: freed_nightlords
+                    # (from the starting_boss option) never arrives as a ReceivedItems packet, so
+                    # this is the only thing that retries a flag write that failed because the
+                    # EventFlag pointer was transiently unreadable (e.g. still mid-tutorial
+                    # transition) right when the writer was first built. A no-op once synced.
+                    await self._sync_event_flags()
+
                 if self.gate_boss_access and self.overlay is not None:
                     owned_names = self._owned_item_names()
                     locked_names = [
                         name for name in ACCESS_NIGHTLORDS if f"{name} Access" not in owned_names
                     ]
-                    self.overlay.state.update(bool(self.reader.read_hub_state()), locked_names)
+                    in_hub = bool(self.reader.read_hub_state())
+                    # pid is refreshed here too, not just at overlay construction - the game
+                    # process can restart mid-session and reconnect under a new pid, but this
+                    # already-running overlay is never torn down/rebuilt for that (see the
+                    # `self.overlay is None` guard above), so without this it would keep hunting
+                    # for a dead process's window and stay invisible forever.
+                    self.overlay.state.update(in_hub, locked_names, self.reader.pm.process_id)
+
+                    # Logged only on change, not every tick - lets a log dump explain exactly
+                    # why the overlay panel was/wasn't visible at any point (it only draws
+                    # while in_hub and locked_names is non-empty - see overlay.py's _tick),
+                    # without spamming a line 4x/second.
+                    state_key = (in_hub, tuple(locked_names))
+                    if state_key != self._last_overlay_state:
+                        self._last_overlay_state = state_key
+                        logger.info("Overlay state changed: in_hub=%s locked=%s", in_hub, locked_names)
             except Exception:
                 logger.exception("Error in Nightreign poll loop")
             await asyncio.sleep(POLL_INTERVAL)
@@ -304,11 +384,14 @@ class NightreignContext(CommonContext):
         timestamp = datetime.now(timezone.utc).isoformat()
 
         if self.per_character_checks and character_name is None:
-            logger.warning("Detected a win, but couldn't read the character class - skipping this check.")
+            logger.warning("Detected a win, but couldn't read the character class - skipping "
+                            "this check.")
             return
 
         if boss.status != "matched":
-            message = boss.message or f"boss_id {boss.raw} could not be resolved (status={boss.status})"
+            message = (
+                boss.message or f"boss_id {boss.raw} could not be resolved (status={boss.status})"
+            )
             logger.warning(message)
             self._append_event({
                 "timestamp": timestamp,
@@ -320,14 +403,18 @@ class NightreignContext(CommonContext):
             })
             return
 
-        name = location_name(character_name, boss.name) if self.per_character_checks else location_name_boss_only(boss.name)
+        name = (location_name(character_name, boss.name) if self.per_character_checks
+                else location_name_boss_only(boss.name))
         location_id = location_name_to_id.get(name)
         if location_id is None:
             # Not in this player's included_characters/included_nightlords - nothing to send.
-            logger.info(f"Win detected ({name}) but that location isn't in this slot's options - not sending.")
+            logger.info(
+                "Win detected (%s) but that location isn't in this slot's options - not sending.",
+                name,
+            )
             return
 
-        logger.info(f"Win detected: {name} (boss_id={boss.raw})")
+        logger.info("Win detected: %s (boss_id=%s)", name, boss.raw)
         self.checked_location_ids.add(location_id)
         self._append_event({
             "timestamp": timestamp,
@@ -349,8 +436,9 @@ class NightreignContext(CommonContext):
         pulse = self.reader.read_outcome_pulse()
         boss_desc = boss.name or boss.message or boss.status
         logger.info(
-            f"Nightreign status: character={character}  boss_id={boss.raw} ({boss_desc})  "
-            f"in_hub={in_hub}  outcome_pulse={pulse}  run_state={self.run_state_path}"
+            "Nightreign status: character=%s  boss_id=%s (%s)  in_hub=%s  outcome_pulse=%s  "
+            "run_state=%s",
+            character, boss.raw, boss_desc, in_hub, pulse, self.run_state_path
         )
 
 

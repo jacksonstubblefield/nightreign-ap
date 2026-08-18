@@ -76,27 +76,35 @@ def _get_client_rect_on_screen(hwnd: int) -> Optional[tuple[int, int, int, int]]
 
 class OverlayState:
     """Thread-safe last-write-wins snapshot: written from client.py's asyncio side on every poll
-    tick, read from the Tk thread's own periodic tick. No history - only the latest matters."""
+    tick, read from the Tk thread's own periodic tick. No history - only the latest matters.
 
-    def __init__(self):
+    pid is included here (not just set once at construction) because the game process can restart
+    mid-session - the reader reconnects to a new pid, but client.py never tears down/rebuilds an
+    already-running overlay (see the `self.overlay is None` guard in poll_loop). Refreshing pid on
+    every tick, the same way visible/locked_names already are, means the overlay keeps following
+    whatever process is actually live instead of silently hunting for a dead one forever."""
+
+    def __init__(self, pid: int):
         self._lock = threading.Lock()
         self._visible = False
         self._locked_names: list[str] = []
+        self._pid = pid
 
-    def update(self, visible: bool, locked_names: list[str]) -> None:
+    def update(self, visible: bool, locked_names: list[str], pid: int) -> None:
         with self._lock:
             self._visible = visible
             self._locked_names = list(locked_names)
+            self._pid = pid
 
-    def snapshot(self) -> tuple[bool, list[str]]:
+    def snapshot(self) -> tuple[bool, list[str], int]:
         with self._lock:
-            return self._visible, list(self._locked_names)
+            return self._visible, list(self._locked_names), self._pid
 
 
 class NightreignOverlay:
     """Owns the overlay window's dedicated Tk thread. Construct once the game's process id is
-    known and gate_boss_access is confirmed true; call start() once. Update what it shows via
-    .state.update(...) from any thread."""
+    known and gate_boss_access is confirmed true; call start() once. Update what it shows (and
+    which process it tracks) via .state.update(...) from any thread."""
 
     _BG = "#0a0a0a"  # chroma-keyed transparent background - anything drawn stays opaque
     _PANEL_WIDTH = 280
@@ -104,8 +112,7 @@ class NightreignOverlay:
     _INSET = 20
 
     def __init__(self, pid: int):
-        self.pid = pid
-        self.state = OverlayState()
+        self.state = OverlayState(pid)
         self._thread: Optional[threading.Thread] = None
         self._root: Optional[tk.Tk] = None
 
@@ -151,8 +158,8 @@ class NightreignOverlay:
         user32.SetLayeredWindowAttributes(hwnd, _colorref(self._BG), 0, LWA_COLORKEY)
 
     def _tick(self, label: tk.Label) -> None:
-        visible, locked_names = self.state.snapshot()
-        game_hwnd = _find_window_for_pid(self.pid)
+        visible, locked_names, pid = self.state.snapshot()
+        game_hwnd = _find_window_for_pid(pid)
         # WS_EX_TOPMOST floats above every other window system-wide, not just the game - without
         # this check the panel would sit on top of the desktop, browser, IDE, etc. whenever
         # visible=True, not just the game. Only actually show it while the game is the foreground

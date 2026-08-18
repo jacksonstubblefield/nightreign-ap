@@ -16,10 +16,11 @@ class ItemData(NamedTuple):
 
 base_id = 3939000
 
-# One flavorful filler item per Nightlord, plus one progression "Access" item
-# per Nightlord that needs a game-side unlock (everything but Tricephalos).
-# Trophy codes stay at base_id+0..7 so existing seeds' item ids don't shift;
-# Access items append at base_id+8.. with no collisions.
+# One flavorful filler item per Nightlord, plus one progression "Access" item per Nightlord
+# tracking whether this player has actually earned it (see game_data.py's ACCESS_NIGHTLORDS -
+# this includes Tricephalos even though it needs no in-game flag write, since AP ownership and
+# in-game visibility aren't the same thing). Trophy codes stay at base_id+0..7 so existing seeds'
+# item ids don't shift; Access items append at base_id+8.. with no collisions.
 item_table = {
     f"{name} Trophy": ItemData(base_id + i)
     for i, name in enumerate(NIGHTLORDS)

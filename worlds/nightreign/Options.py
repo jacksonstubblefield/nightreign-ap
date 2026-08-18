@@ -1,7 +1,13 @@
+"""Nightreign Options
+"""
+
+# Native Imports
 from dataclasses import dataclass
 
-from Options import Choice, DeathLink, OptionSet, PerGameCommonOptions, Toggle
+# Outside Imports
+from Options import Choice, OptionSet, PerGameCommonOptions, Toggle
 
+# Local Imports
 from .game_data import CHARACTERS, NIGHTLORDS
 
 
@@ -30,8 +36,9 @@ class IncludedNightlords(OptionSet):
     default = frozenset(NIGHTLORDS)
 
 
-class CheckGranularity(Choice):
-    """How location checks are generated.
+class BossesWithCharacters(Choice):
+    """If location checks are generated as just defeating the boss or defeating 
+    the boss as a specific character.
 
     "boss" (default): one check per Nightlord - "Defeat X" - any character's win counts, and
     included_characters has no effect on what locations exist.
@@ -40,7 +47,7 @@ class CheckGranularity(Choice):
     "Defeat X as Y" - the original, more granular mode.
     """
 
-    display_name = "Check Granularity"
+    display_name = "Bosses With Characters"
     option_boss = 0
     option_boss_and_character = 1
     default = 0
@@ -50,11 +57,16 @@ class StartingBoss(Choice):
     """Which Nightlord starts unlocked, before receiving any Access items - or "random" to have
     the generator pick one for this slot.
 
-    This doesn't take Tricephalos away: it's always available in a fresh save with no flag write
-    needed (see game_data.py), regardless of this option. Picking Tricephalos here (the default)
-    matches that baseline exactly. Picking anything else additionally frees that Nightlord - and,
-    for the 6 secondary Nightlords, its whole group, since the game only exposes one shared flag
-    for all 6 and there's no way to unlock just one - without needing its Access item.
+    Picking Tricephalos here (the default) frees it from an AP perspective, matching how it's
+    already always selectable in-game on a fresh save with no flag write needed (see game_data.py)
+    - so no Access item for it needs to be found. Picking anything else means Tricephalos is
+    NOT free: like any other Nightlord that isn't your starting_boss, you'll need to receive its
+    Access item before it counts as yours, even though the vanilla game still lets you select it
+    (the overlay is what shows you that mismatch - see GateBossAccess). Picking one of the 6
+    secondary Nightlords additionally frees just that one from an AP perspective, without needing
+    its Access item - though the game's own all-or-nothing flag will also reveal its 5 siblings
+    in-game as an unavoidable side effect; those still need their own Access item to actually be
+    yours.
     """
 
     display_name = "Starting Boss"
@@ -77,29 +89,27 @@ assert [StartingBoss.name_lookup[i] for i in range(len(NIGHTLORDS))] == [
 
 
 class GateBossAccess(Toggle):
-    """If enabled, Nightlords not already unlocked (by being Tricephalos or the chosen
-    starting_boss) require receiving that Nightlord's Access item before you can select them
-    in-game.
+    """If enabled, every Nightlord other than your chosen starting_boss requires receiving that
+    Nightlord's Access item before it counts as yours.
 
-    This writes to the running game process (not just reads) and needs
-    Borderless Windowed mode so the client can show an overlay of which
-    bosses you actually own - the underlying game flag reveals the 6
-    secondary Nightlords in one all-or-nothing batch, so some not-yet-owned
-    ones will still be visible/selectable in-game; the overlay exists to
-    show you which is which.
+    This writes to the running game process (not just reads) and needs Borderless Windowed mode
+    so the client can show an overlay of which bosses you actually own. The underlying game only
+    supports gating in two ways - Tricephalos is always selectable with no flag at all, and the
+    other 6 secondary Nightlords reveal as one all-or-nothing batch - so plenty of not-yet-owned
+    Nightlords (Tricephalos included) can still be visible/selectable in-game; the overlay exists
+    to show you which ones those are.
 
-    Off by default - this is new, and both the write path and the overlay
-    are less tested than the read-only tracker.
+    On by default.
     """
 
     display_name = "Gate Boss Access Behind Items"
+    default = 1
 
 
 @dataclass
 class NightreignOptions(PerGameCommonOptions):
     included_characters: IncludedCharacters
     included_nightlords: IncludedNightlords
-    check_granularity: CheckGranularity
+    bosses_with_characters: BossesWithCharacters
     starting_boss: StartingBoss
     gate_boss_access: GateBossAccess
-    death_link: DeathLink

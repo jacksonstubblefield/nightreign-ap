@@ -57,9 +57,15 @@ def nightlord_roster() -> list:
 
 NIGHTLORDS = nightlord_roster()
 
-# Nightlords that need an AP "access" item - everything except Tricephalos,
-# which is always available in a fresh save with no flag write needed.
-ACCESS_NIGHTLORDS = [name for name in NIGHTLORDS if name != "Tricephalos"]
+# Nightlords that need an AP "access" item before the player is considered to have earned them.
+# This includes Tricephalos even though it's always visually selectable in a fresh save with no
+# flag write needed (see ACCESS_ITEM_EVENT_FLAGS below) - that's a statement about what the
+# vanilla game lets you click, not about what this player has actually earned in this multiworld.
+# Without its own Access item, a player whose starting_boss was something else would see
+# Tricephalos as "free" despite never receiving anything for it - exactly the AP-ownership-vs-
+# in-game-visibility mismatch the overlay exists to surface for the other 6 (see overlay.py),
+# so Tricephalos is tracked the same way rather than special-cased out of it.
+ACCESS_NIGHTLORDS = list(NIGHTLORDS)
 
 # EventFlag ids, confirmed live via Cheat Engine against the game's own
 # EventFlagBaseA function: SetEventFlag(110, 1) reveals all 6 secondary
@@ -69,22 +75,30 @@ ACCESS_NIGHTLORDS = [name for name in NIGHTLORDS if name != "Tricephalos"]
 EVENT_FLAG_SECONDARY_BOSSES = 110
 EVENT_FLAG_NIGHT_ASPECT = 115
 
+# Tricephalos has no entry here - there's no EventFlag gating it in the vanilla game (it's always
+# selectable from a fresh save), so owning "Tricephalos Access" has no in-game write to perform.
+# It still exists as an AP item (see ACCESS_NIGHTLORDS above) and still affects the overlay's
+# locked/unlocked bookkeeping in client.py - it's just a no-op for _sync_event_flags specifically.
 ACCESS_ITEM_EVENT_FLAGS = {
     f"{name} Access": (EVENT_FLAG_NIGHT_ASPECT if name == "Night Aspect" else EVENT_FLAG_SECONDARY_BOSSES)
     for name in ACCESS_NIGHTLORDS
+    if name != "Tricephalos"
 }
 
 
 def starting_free_nightlords(starting_boss: str) -> list:
-    """Every Nightlord that ends up unlocked for free because of a
-    `starting_boss` choice - normally just that one boss, but if it's one of
-    the 6 secondary Nightlords sharing EVENT_FLAG_SECONDARY_BOSSES, all 6
-    come along with it, since the game has no finer-grained flag to unlock
-    just one (see EVENT_FLAG_SECONDARY_BOSSES above). Tricephalos is already
-    free regardless of this choice (see ACCESS_NIGHTLORDS), so choosing it
-    here is a no-op read - not the only source of truth for what's unlocked.
+    """The Nightlord(s) that are free - AP-owned with no Access item needed -
+    because of a `starting_boss` choice. Just that one boss. Returns a list
+    (rather than the single name) so callers don't need a special case, and
+    to leave room for this to grow in future.
+
+    Deliberately NOT expanded to the rest of `starting_boss`'s
+    EVENT_FLAG_SECONDARY_BOSSES group (when starting_boss is one of the 6):
+    revealing it in-game unavoidably reveals its 5 siblings too (see
+    EVENT_FLAG_SECONDARY_BOSSES above), but that's an in-game visibility side
+    effect only, not AP ownership - those siblings still need their own
+    Access item, same as if `starting_boss` hadn't been touched at all. The
+    overlay is what shows the player which of the visually-unlocked-but-not-
+    earned ones those are.
     """
-    if starting_boss not in ACCESS_NIGHTLORDS:
-        return [starting_boss]
-    flag = ACCESS_ITEM_EVENT_FLAGS[f"{starting_boss} Access"]
-    return [name for name in ACCESS_NIGHTLORDS if ACCESS_ITEM_EVENT_FLAGS[f"{name} Access"] == flag]
+    return [starting_boss]

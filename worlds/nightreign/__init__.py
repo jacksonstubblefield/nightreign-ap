@@ -40,10 +40,11 @@ class NightreignWorld(World):
     Location checks are "defeat Nightlord X" (or, with check_granularity set
     to boss_and_character, "defeat Nightlord X as character Y"), detected via
     read-only game memory polling. With the gate_boss_access option enabled,
-    Nightlords not already unlocked (Tricephalos and the chosen starting_boss
-    are always free) are gated behind receiving their Access item, written
-    into the running game process; otherwise received items are flavorful
-    and have no in-game effect.
+    every Nightlord other than the chosen starting_boss is gated behind
+    receiving that Nightlord's Access item - written into the running game
+    process where the game supports it (all but Tricephalos, which has no
+    gating flag and is tracked overlay-side only); otherwise received items
+    are flavorful and have no in-game effect.
     """
 
     game = "Elden Ring Nightreign"
@@ -83,28 +84,40 @@ class NightreignWorld(World):
         # Iterate CHARACTERS/NIGHTLORDS (fixed order) rather than the option
         # sets directly, so location creation order - and therefore id
         # assignment order for anything downstream that relies on it - stays
-        # deterministic regardless of set iteration order.
-        if self.options.check_granularity == "boss_and_character":
+        # deterministic regardless of set iteration order. Each location is
+        # paired with the Nightlord it defeats so the access rule below can
+        # gate it without re-parsing "Defeat X" / "Defeat X as Y" apart.
+        if self.options.bosses_with_characters == "boss_and_character":
             included_characters = self.options.included_characters.value
-            self.active_locations = [
-                location_name(character, nightlord)
+            locations = [
+                (location_name(character, nightlord), nightlord)
                 for character in CHARACTERS
                 if character in included_characters
                 for nightlord in NIGHTLORDS
                 if nightlord in included_nightlords
             ]
         else:
-            self.active_locations = [
-                location_name_boss_only(nightlord)
+            locations = [
+                (location_name_boss_only(nightlord), nightlord)
                 for nightlord in NIGHTLORDS
                 if nightlord in included_nightlords
             ]
+        self.active_locations = [name for name, _nightlord in locations]
 
         menu = Region("Menu", self.player, self.multiworld)
-        menu.locations += [
-            NightreignLocation(self.player, name, self.location_name_to_id[name], menu)
-            for name in self.active_locations
-        ]
+        for name, nightlord in locations:
+            location = NightreignLocation(self.player, name, self.location_name_to_id[name], menu)
+            # Without this, every location is unconditionally reachable and the fill
+            # algorithm has no idea that defeating a Nightlord requires having earned
+            # it first - it can (and did) place the only route to a Nightlord behind a
+            # location that's itself unreachable from starting_boss, softlocking the
+            # run. gate_boss_access off means no Access items exist at all, so no rule
+            # is needed there either.
+            if self.options.gate_boss_access and nightlord not in self.freed_nightlords:
+                location.access_rule = lambda state, nightlord=nightlord: state.has(
+                    f"{nightlord} Access", self.player
+                )
+            menu.locations.append(location)
         self.multiworld.regions.append(menu)
 
     def create_items(self) -> None:
@@ -140,5 +153,5 @@ class NightreignWorld(World):
         return {
             "gate_boss_access": bool(self.options.gate_boss_access),
             "starting_boss": self.starting_boss,
-            "check_granularity": self.options.check_granularity.current_key,
+            "bosses_with_characters": self.options.bosses_with_characters.current_key,
         }

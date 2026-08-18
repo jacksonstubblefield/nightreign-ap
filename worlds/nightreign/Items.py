@@ -37,13 +37,20 @@ item_table = {
 } | {
     f"{name} Access": ItemData(BASE_ID + len(NIGHTLORDS) + i, ItemClassification.progression)
     for i, name in enumerate(ACCESS_NIGHTLORDS)
+} | {
+    # Appended after the Access items rather than interleaved, so existing seeds' Trophy/Access
+    # ids never shift. Client-side, receiving this resolves to a real dropped weapon (see
+    # client.py's _roll_weapon_drop/_deliver_pending_weapons) only when the randomize_weapons
+    # option is on for this slot - with it off, this item is never placed in the pool at all
+    # (see __init__.py's get_filler_item_name), so it behaves like any other flavorful filler.
+    "Randomized Weapon": ItemData(BASE_ID + len(NIGHTLORDS) + len(ACCESS_NIGHTLORDS)),
 }
 
-# get_filler_item_name() must only ever choose from this, not item_table's
-# full key set - once item_table holds progression Access items, choosing
-# from all of it would let AP's own pool-repair logic (start_inventory_from_pool
-# depletion, plando swaps) hand out an Access item as "random filler",
-# silently breaking gating for whoever receives it.
+# get_filler_item_name() must only ever choose from FILLER_ITEM_NAMES (extended with
+# "Randomized Weapon" there when randomize_weapons is on) - not item_table's full key set, since
+# once item_table holds progression Access items, choosing from all of it would let AP's own
+# pool-repair logic (start_inventory_from_pool depletion, plando swaps) hand out an Access item
+# as "random filler", silently breaking gating for whoever receives it.
 FILLER_ITEM_NAMES = [f"{name} Trophy" for name in NIGHTLORDS]
 
 item_name_to_id = {name: data.code for name, data in item_table.items()}

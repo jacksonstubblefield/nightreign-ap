@@ -86,6 +86,21 @@ class GateBossAccess(Toggle):
     default = 1
 
 
+class RandomizeWeapons(Toggle):
+    """If enabled, some filler items become "Randomized Weapon" instead of a Nightlord Trophy -
+    received items resolve client-side to a real, randomly-rolled weapon (id, upgrade tier,
+    Ash of War, and affinity all independently randomized) dropped on the ground the next time
+    you enter an Expedition.
+
+    Off by default: this depends on a write path to the game process that (unlike
+    gate_boss_access's EventFlag writes) hasn't been live-verified yet - see the project's dev
+    notes before turning this on for anything but testing.
+    """
+
+    display_name = "Randomize Weapons"
+    default = 0
+
+
 class Goal(Choice):
     """What this slot needs to accomplish to complete its goal.
 
@@ -152,6 +167,7 @@ class NightreignOptions(PerGameCommonOptions):
     bosses_with_characters: BossesWithCharacters
     starting_boss: StartingBoss
     gate_boss_access: GateBossAccess
+    randomize_weapons: RandomizeWeapons
     goal: Goal
     goal_random_min: GoalRandomMin
     goal_random_max: GoalRandomMax

@@ -27,9 +27,17 @@ import pymem.process
 
 try:
     from .game_data import (
+        ABOBA_AOB,
+        ABOBA_FUNC_OFFSET,
         CHARACTER_CLASS_NAMES,
         DRIFT_TOLERANCE,
+        ITEMDROP_CALL_AOB,
+        ITEMDROP_CALL_FUNC_OFFSET,
         KNOWN_BOSS_IDS,
+        MAPITEMMAN_AOB,
+        MAPITEMMAN_AOB_OFFSET,
+        TLS_FAKE_CONTEXT_RVA,
+        TLS_SLOT_FETCHER_ITEMDROP_AOB,
         UNSET_SENTINEL,
     )
 except ImportError:
@@ -43,9 +51,17 @@ except ImportError:
 
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     from game_data import (  # type: ignore[no-redef]
+        ABOBA_AOB,
+        ABOBA_FUNC_OFFSET,
         CHARACTER_CLASS_NAMES,
         DRIFT_TOLERANCE,
+        ITEMDROP_CALL_AOB,
+        ITEMDROP_CALL_FUNC_OFFSET,
         KNOWN_BOSS_IDS,
+        MAPITEMMAN_AOB,
+        MAPITEMMAN_AOB_OFFSET,
+        TLS_FAKE_CONTEXT_RVA,
+        TLS_SLOT_FETCHER_ITEMDROP_AOB,
         UNSET_SENTINEL,
     )
 
@@ -117,14 +133,39 @@ class BossIdReading:
 
 
 def match_boss_id(boss_id: int, tolerance: int = DRIFT_TOLERANCE) -> BossIdReading:
+    """Returns a BossIdReading for the given raw boss_id, matching against 
+    KNOWN_BOSS_IDS with the given tolerance.
+
+    Args:
+        boss_id (int): The raw boss_id read from memory.
+        tolerance (int, optional): The tolerance for matching boss IDs. Defaults to DRIFT_TOLERANCE.
+
+    Returns:
+        BossIdReading: The result of the boss ID matching.
+    """
     if boss_id == UNSET_SENTINEL:
         return BossIdReading(raw=boss_id, status="unset")
-    candidates = sorted({name for known_id, name in KNOWN_BOSS_IDS.items() if abs(boss_id - known_id) <= tolerance})
+    candidates = sorted({name for known_id, name in KNOWN_BOSS_IDS.items() 
+                         if abs(boss_id - known_id) <= tolerance})
     if len(candidates) == 1:
         return BossIdReading(raw=boss_id, status="matched", name=candidates[0])
     if len(candidates) > 1:
         return BossIdReading(raw=boss_id, status="ambiguous", candidates=candidates)
     return BossIdReading(raw=boss_id, status="unknown")
+
+
+@dataclass
+class ItemDropTargets:
+    """Resolved addresses for memory_writer.py's NightreignItemDropWriter - see
+    resolve_item_drop_targets(). Everything here is a *value* the writer bakes into a hand-built
+    trampoline as an immediate, not a slot to keep re-reading (unlike GameMan/GameDataMan, none
+    of these move once resolved for the life of the process)."""
+
+    map_item_man_slot: int
+    item_drop_func_addr: int
+    tls_slot_fetcher_addr: int
+    aboba_func_addr: int
+    tls_fake_context_addr: int
 
 
 def _aob_to_regex_bytes(pattern: str) -> bytes:
@@ -161,6 +202,8 @@ class NightreignMemoryReader:
 
     @property
     def connected(self) -> bool:
+        """True if the reader is currently attached to a running nightreign.exe process.
+        """
         return self.pm is not None
 
     def connect(self) -> bool:
@@ -188,11 +231,16 @@ class NightreignMemoryReader:
         return True
 
     def disconnect(self):
+        """Detach from the game process. Safe to call even if not connected."""
         self.pm = None
         self._gameman_slot = None
         self._gamedataman_slot = None
 
-    def _resolve_pointer_slot(self, pm: pymem.Pymem, aob: str) -> int:
+    def _resolve_pointer_slot(self, pm: pymem.Pymem, aob: str, offset: int = 0) -> int:
+        """offset shifts the match address forward before the RIP-relative math below - needed
+        when the actual `mov reg,[rip+disp32]` instruction isn't at the start of the AOB match
+        (e.g. MAPITEMMAN_AOB in game_data.py). Mirrors the CT table's own registerBaseAddr()
+        Lua resolver exactly: `address = match + offset`, then `address + 7 + disp32`."""
         pattern = _aob_to_regex_bytes(aob)
         module = pymem.process.module_from_name(pm.process_handle, self.process_name)
         # check_memory_protection=False: this game's code sections are
@@ -205,8 +253,9 @@ class NightreignMemoryReader:
         )
         if match_addr is None:
             raise PointerNotFoundError(f"AOB not found (build/version likely changed): {aob}")
-        disp = struct.unpack("<i", pm.read_bytes(match_addr + 3, 4))[0]
-        return match_addr + 7 + disp
+        address = match_addr + offset
+        disp = struct.unpack("<i", pm.read_bytes(address + 3, 4))[0]
+        return address + 7 + disp
 
     def _resolve_function_address(self, pm: pymem.Pymem, aob: str) -> int:
         """Like _resolve_pointer_slot, but for a code address the AOB scan itself already
@@ -230,6 +279,34 @@ class NightreignMemoryReader:
         ptr_slot = self._resolve_pointer_slot(self.pm, EVENTFLAG_PTR_AOB)
         base_a_addr = self._resolve_function_address(self.pm, EVENTFLAG_BASE_A_AOB)
         return ptr_slot, base_a_addr
+
+    def resolve_item_drop_targets(self) -> ItemDropTargets:
+        """Resolves everything memory_writer.py's NightreignItemDropWriter needs to drop a real
+        item on the ground in a running game - the randomized-weapon filler write path. Same
+        call-only-when-wanted convention as resolve_event_flag_targets(): never called from
+        connect(), so a patch that only breaks these five AOBs can't take down the read-only
+        tracker for players who never opt into it."""
+        if not self.connected:
+            raise PointerNotFoundError("not connected - call connect() first")
+        map_item_man_slot = self._resolve_pointer_slot(
+            self.pm, MAPITEMMAN_AOB, offset=MAPITEMMAN_AOB_OFFSET
+        )
+        item_drop_func_addr = (
+            self._resolve_function_address(self.pm, ITEMDROP_CALL_AOB) + ITEMDROP_CALL_FUNC_OFFSET
+        )
+        tls_slot_fetcher_addr = self._resolve_function_address(self.pm, TLS_SLOT_FETCHER_ITEMDROP_AOB)
+        aboba_func_addr = (
+            self._resolve_function_address(self.pm, ABOBA_AOB) + ABOBA_FUNC_OFFSET
+        )
+        module = pymem.process.module_from_name(self.pm.process_handle, self.process_name)
+        tls_fake_context_addr = module.lpBaseOfDll + TLS_FAKE_CONTEXT_RVA
+        return ItemDropTargets(
+            map_item_man_slot=map_item_man_slot,
+            item_drop_func_addr=item_drop_func_addr,
+            tls_slot_fetcher_addr=tls_slot_fetcher_addr,
+            aboba_func_addr=aboba_func_addr,
+            tls_fake_context_addr=tls_fake_context_addr,
+        )
 
     def _safe_read_qword(self, address: int) -> Optional[int]:
         try:
@@ -282,6 +359,7 @@ class NightreignMemoryReader:
         return self._safe_read_uint(base + CHARACTER_CLASS_OFFSET)
 
     def read_character_class_name(self) -> Optional[str]:
+        """Returns the character class name (see CHARACTER_CLASS_NAMES) or None if unreadable."""
         class_id = self.read_character_class()
         if class_id is None:
             return None

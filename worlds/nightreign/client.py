@@ -4,17 +4,23 @@ Polls the running game via memory_reader.py and sends a location check on
 each detected Nightlord win. When the gate_boss_access option is on for this
 slot (learned from slot_data on connect), received Access items are synced
 into the game via memory_writer.py's SetEventFlag port, gating which
-Nightlords are actually selectable. With that option off, received items
-have no in-game effect - the base CommonContext/CLI/GUI machinery just logs
-them, same as before this was added.
+Nightlords are actually selectable. When randomize_weapons is on, received
+"Randomized Weapon" filler items are rolled into a real weapon client-side
+(see _roll_weapon_drop) and dropped on the ground via memory_writer.py's
+NightreignItemDropWriter the next time an Expedition is entered. With both
+options off, received items have no in-game effect - the base
+CommonContext/CLI/GUI machinery just logs them, same as before either was
+added.
 """
 
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 import logging
 import os
+import random
 import re
 from datetime import datetime, timezone
 from typing import Optional
@@ -26,11 +32,13 @@ from CommonClient import (ClientCommandProcessor, CommonContext, get_base_parser
                           gui_enabled, server_loop)
 from NetUtils import ClientStatus
 
-from .game_data import ACCESS_ITEM_EVENT_FLAGS, ACCESS_NIGHTLORDS, starting_free_nightlords
+from .game_data import (ACCESS_ITEM_EVENT_FLAGS, ACCESS_NIGHTLORDS, EFFECT_CAP_MAP,
+                        WEAPON_ART_TABLE, WEAPON_TABLE, roll_effect_tier, roll_upgrade_tier,
+                        starting_free_nightlords)
 from .Items import lookup_id_to_name
 from .Locations import location_name, location_name_boss_only, location_name_to_id
 from .memory_reader import NightreignMemoryReader, PointerNotFoundError
-from .memory_writer import NightreignMemoryWriter
+from .memory_writer import NightreignItemDropWriter, NightreignMemoryWriter
 from .overlay import NightreignOverlay
 
 logger = logging.getLogger("NightreignClient")
@@ -69,16 +77,20 @@ class NightreignContext(CommonContext):
     checked_location_ids: set
     slot_data: dict
     gate_boss_access: bool
+    randomize_weapons: bool
     freed_nightlords: set
     per_character_checks: bool
     goal: str
     goal_groups: list
     writer: Optional[NightreignMemoryWriter]
     overlay: Optional[NightreignOverlay]
+    item_drop_writer: Optional[NightreignItemDropWriter]
 
     _last_pulse: Optional[int]
     _synced_flags: set
     _last_overlay_state: Optional[tuple]
+    _last_hub_state: Optional[bool]
+    _delivered_weapon_keys: set
 
     def __init__(self, server_address: Optional[str], password: Optional[str]):
         super().__init__(server_address, password)
@@ -88,15 +100,19 @@ class NightreignContext(CommonContext):
         self.checked_location_ids = set()
         self.slot_data = {}
         self.gate_boss_access = False
+        self.randomize_weapons = False
         self.freed_nightlords = set()
         self.per_character_checks = False
         self.goal = "all_bosses"
         self.goal_groups = []
         self.writer = None
         self.overlay = None
+        self.item_drop_writer = None
         self._last_pulse = None
         self._synced_flags = set()
         self._last_overlay_state = None
+        self._last_hub_state = None
+        self._delivered_weapon_keys = set()
 
     def run_gui(self):
 
@@ -126,6 +142,7 @@ class NightreignContext(CommonContext):
             # it sets this itself here.
             self.slot_data = args.get("slot_data", {}) or {}
             self.gate_boss_access = bool(self.slot_data.get("gate_boss_access", False))
+            self.randomize_weapons = bool(self.slot_data.get("randomize_weapons", False))
             self.freed_nightlords = set(
                 starting_free_nightlords(self.slot_data.get("starting_boss", "Tricephalos"))
             )
@@ -160,10 +177,17 @@ class NightreignContext(CommonContext):
             # would leave them permanently unbuilt for the rest of the session.
             self._ensure_gating_ready()
             asyncio.create_task(self._sync_event_flags())
+            # Same race as gating above: the game process may already be attached from before
+            # this connect, so build the item-drop writer here too, not just in poll_loop.
+            self._ensure_weapon_drop_ready()
 
         if cmd == "ReceivedItems":
             if self.gate_boss_access:
                 asyncio.create_task(self._sync_event_flags())
+            # No action needed here for randomize_weapons - _pending_weapon_keys() recomputes
+            # from self.items_received fresh every time poll_loop's hub-exit edge fires, so a
+            # newly received "Randomized Weapon" is picked up automatically on the next
+            # Expedition entry without any bookkeeping needed at receive time.
 
         if cmd == "RoomUpdate":
             # ctx.missing_locations is updated (by the base on_package
@@ -266,6 +290,94 @@ class NightreignContext(CommonContext):
         logger.info("Boss-gating writer resolved (ptr_slot=0x%X, base_a=0x%X).",
                     ptr_slot, base_a_addr)
 
+    # --- Randomized-weapon write path ---
+    #
+    # Off unless slot_data says randomize_weapons is on for this slot. A received "Randomized
+    # Weapon" filler item is deterministically rolled into a real weapon (see
+    # _roll_weapon_drop) and dropped on the ground the next time the hub->active-run edge fires
+    # in poll_loop (i.e. the next Expedition entry) - not immediately on receipt, since there's
+    # no safe way to drop an item while in the hub/menu.
+
+    def _ensure_weapon_drop_ready(self) -> None:
+        """Same "build once both the option and the game connection are known" shape as
+        _ensure_gating_ready, for the same race-condition reason - called from both here and
+        poll_loop's connect-transition. A no-op once the writer already exists."""
+        if not self.randomize_weapons or not self.reader.connected or self.item_drop_writer is not None:
+            return
+        try:
+            targets = self.reader.resolve_item_drop_targets()
+        except PointerNotFoundError as e:
+            logger.error("Randomized-weapon write path unavailable (%s) - disabling this "
+                         "session, the read-only tracker is unaffected.", e)
+            self.randomize_weapons = False
+            return
+        self.item_drop_writer = NightreignItemDropWriter(self.reader.pm, targets)
+        logger.info("Randomized-weapon writer resolved.")
+
+    def _pending_weapon_keys(self) -> set:
+        """(location, player) keys for every received "Randomized Weapon" item not yet
+        delivered - recomputed fresh from self.items_received each call rather than tracked
+        incrementally, the same "diff against what's already done" shape as _sync_event_flags."""
+        received = {
+            (i.location, i.player) for i in self.items_received
+            if lookup_id_to_name.get(i.item) == "Randomized Weapon"
+        }
+        return received - self._delivered_weapon_keys
+
+    def _roll_weapon_drop(self, location: int, player: int) -> dict:
+        """Deterministic roll for one "Randomized Weapon" filler instance, seeded off which
+        check sent it (seed_name + location + player) rather than delivery order or timing - so
+        a reconnect, a retried drop, or a delayed Expedition entry always reproduces the exact
+        same weapon instead of re-rolling. Every axis is independently randomized per the
+        project's design discussion: weapon id (uniform over game_data.WEAPON_TABLE),
+        upgrade_level (weighted via game_data.roll_upgrade_tier - see its own comment for the
+        band shape), weapon_art and wep_effect (uniform, including a "None" outcome so not every
+        drop is maximally loaded - left unweighted deliberately, so "None" is roughly 1-in-131),
+        and effect_tier (weighted via game_data.roll_effect_tier, same band-percentile idea as
+        upgrade_level - memory_writer.py's drop_item already discards this whenever wep_effect is
+        None or the rolled effect's own cap is lower, so no extra logic is needed here to keep it
+        valid). magic_skill_1/2 are left at "None" - narrower in scope (only staff/seal weapons
+        use them) and out of scope for this pass; ask if you want those randomized too.
+        """
+        rng = random.Random(f"{self.seed_name}:{location}:{player}:weapon")
+        return {
+            "item_id": rng.choice(list(WEAPON_TABLE)),
+            "upgrade_level": roll_upgrade_tier(rng.randint(0, 100)),
+            "weapon_art": rng.choice([-1] + list(WEAPON_ART_TABLE)),
+            "wep_effect": rng.choice([-1] + list(EFFECT_CAP_MAP)),
+            "effect_tier": roll_effect_tier(rng.randint(0, 100)),
+        }
+
+    async def _deliver_pending_weapons(self) -> None:
+        if self.item_drop_writer is None:
+            return
+        pending = self._pending_weapon_keys()
+        if not pending:
+            return
+        loop = asyncio.get_running_loop()
+        for location, player in pending:
+            roll = self._roll_weapon_drop(location, player)
+            ok = await loop.run_in_executor(
+                None, functools.partial(self.item_drop_writer.drop_item, **roll)
+            )
+            if ok:
+                self._delivered_weapon_keys.add((location, player))
+                self._append_event({
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "type": "weapon_drop",
+                    "location": location,
+                    "player": player,
+                    **roll,
+                })
+                logger.info("Dropped randomized weapon 0x%X (upgrade_level=%s) for "
+                            "location=%s player=%s.", roll["item_id"], roll["upgrade_level"],
+                            location, player)
+            else:
+                # Not removed from the pending set - _pending_weapon_keys() will offer it again
+                # on the next Expedition entry, matching _sync_event_flags's retry shape.
+                logger.warning("Weapon drop skipped for location=%s player=%s - game not ready, "
+                                "will retry on next Expedition entry.", location, player)
+
     # --- Per-run local state file ---
     #
     # One file per distinct AP world/slot (keyed by seed name + slot name),
@@ -296,13 +408,19 @@ class NightreignContext(CommonContext):
                 with open(self.run_state_path, "r", encoding="utf-8") as f:
                     data = json.load(f)
                 self.checked_location_ids = {int(x) for x in data.get("checked_locations", [])}
+                self._delivered_weapon_keys = {
+                    (int(location), int(player))
+                    for location, player in data.get("delivered_weapon_keys", [])
+                }
             except (json.JSONDecodeError, OSError, ValueError) as e:
                 logger.warning(
                     "Could not read existing Nightreign run state at %s: %s", self.run_state_path, e
                 )
                 self.checked_location_ids = set()
+                self._delivered_weapon_keys = set()
         else:
             self.checked_location_ids = set()
+            self._delivered_weapon_keys = set()
             self._write_run_state(seed_name, slot_name, events=[])
 
         logger.info("Nightreign run state file: %s", self.run_state_path)
@@ -312,6 +430,7 @@ class NightreignContext(CommonContext):
             "seed_name": seed_name,
             "slot_name": slot_name,
             "checked_locations": sorted(self.checked_location_ids),
+            "delivered_weapon_keys": sorted(list(key) for key in self._delivered_weapon_keys),
             "events": events,
         }
         with open(self.run_state_path, "w", encoding="utf-8") as f:
@@ -327,9 +446,10 @@ class NightreignContext(CommonContext):
         except (FileNotFoundError, json.JSONDecodeError, OSError):
             data = {
                 "seed_name": seed_name, "slot_name": slot_name,
-                "checked_locations": [], "events": [],
+                "checked_locations": [], "delivered_weapon_keys": [], "events": [],
             }
         data["checked_locations"] = sorted(self.checked_location_ids)
+        data["delivered_weapon_keys"] = sorted(list(key) for key in self._delivered_weapon_keys)
         data.setdefault("events", []).append(event)
         with open(self.run_state_path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
@@ -348,12 +468,15 @@ class NightreignContext(CommonContext):
                     # trusting state from a writer that no longer exists.
                     self.writer = None
                     self._synced_flags.clear()
+                    self.item_drop_writer = None
+                    self._last_hub_state = None
                     try:
                         if self.reader.connect():
                             logger.info("Connected to nightreign.exe")
                             self._ensure_gating_ready()
                             if self.gate_boss_access:
                                 asyncio.create_task(self._sync_event_flags())
+                            self._ensure_weapon_drop_ready()
                         else:
                             await asyncio.sleep(RECONNECT_INTERVAL)
                             continue
@@ -377,27 +500,40 @@ class NightreignContext(CommonContext):
                     # transition) right when the writer was first built. A no-op once synced.
                     await self._sync_event_flags()
 
+                # Read once per tick and shared below - True in hub/menu/loading, False in an
+                # active run, None if transiently unreadable (e.g. a scene transition).
+                in_hub = self.reader.read_hub_state()
+
+                if self.randomize_weapons and in_hub is not None:
+                    # Only a *confirmed* True->False read counts as "just entered an Expedition" -
+                    # deliberately not coercing a transient None to False here (unlike the
+                    # overlay's bool(in_hub) below), since that could misfire a real remote-thread
+                    # dispatch off a momentarily-unreadable read instead of a genuine transition.
+                    if self._last_hub_state is True and in_hub is False:
+                        await self._deliver_pending_weapons()
+                    self._last_hub_state = in_hub
+
                 if self.gate_boss_access and self.overlay is not None:
                     owned_names = self._owned_item_names()
                     locked_names = [
                         name for name in ACCESS_NIGHTLORDS if f"{name} Access" not in owned_names
                     ]
-                    in_hub = bool(self.reader.read_hub_state())
                     # pid is refreshed here too, not just at overlay construction - the game
                     # process can restart mid-session and reconnect under a new pid, but this
                     # already-running overlay is never torn down/rebuilt for that (see the
                     # `self.overlay is None` guard above), so without this it would keep hunting
                     # for a dead process's window and stay invisible forever.
-                    self.overlay.state.update(in_hub, locked_names, self.reader.pm.process_id)
+                    self.overlay.state.update(bool(in_hub), locked_names, self.reader.pm.process_id)
 
                     # Logged only on change, not every tick - lets a log dump explain exactly
                     # why the overlay panel was/wasn't visible at any point (it only draws
                     # while in_hub and locked_names is non-empty - see overlay.py's _tick),
                     # without spamming a line 4x/second.
-                    state_key = (in_hub, tuple(locked_names))
+                    state_key = (bool(in_hub), tuple(locked_names))
                     if state_key != self._last_overlay_state:
                         self._last_overlay_state = state_key
-                        logger.info("Overlay state changed: in_hub=%s locked=%s", in_hub, locked_names)
+                        logger.info("Overlay state changed: in_hub=%s locked=%s", bool(in_hub),
+                                    locked_names)
             except Exception:
                 logger.exception("Error in Nightreign poll loop")
             await asyncio.sleep(POLL_INTERVAL)

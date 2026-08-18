@@ -109,22 +109,22 @@ class GateBossAccess(Toggle):
 class Goal(Choice):
     """What this slot needs to accomplish to complete its goal.
 
-    "all_bosses" (default): every included character x Nightlord location (per
-    bosses_with_characters) must be checked - the original behavior.
-
-    "night_aspect": defeat Night Aspect - the vanilla game's own ending/credits boss. With
+    "Night Aspect" (default): defeat Night Aspect - the vanilla game's own ending/credits boss. With
     bosses_with_characters set to boss_and_character, any one included character's Night
     Aspect win counts (matches how the vanilla game rolls credits on the first Night Aspect
     kill regardless of character). Night Aspect must be in included_nightlords, or this goal
     is unreachable.
 
-    "all_bosses_any_character": defeat every included Nightlord at least once, with any
+    "All Bosses": every included character x Nightlord location (per
+    bosses_with_characters) must be checked - the original behavior. A titanic goal.
+
+    "All Bosses Any Character": defeat every included Nightlord at least once, with any
     included character - only differs from all_bosses when bosses_with_characters is
     boss_and_character (in "boss" mode they're identical, since there's already only one
     location per Nightlord). Every included character x Nightlord location still gets
     generated as a regular, non-required check - this only changes what's required to finish.
 
-    "random_subset": bosses_with_characters must be boss_and_character. At generation time,
+    "Random": bosses_with_characters must be boss_and_character. At generation time,
     a random number of specific "Defeat X as Y" locations (between goal_random_min and
     goal_random_max, drawn only from this slot's included_characters x included_nightlords,
     no duplicates) are selected as the required objective set. Every other included
@@ -132,8 +132,8 @@ class Goal(Choice):
     """
 
     display_name = "Goal"
-    option_all_bosses = 0
-    option_night_aspect = 1
+    option_night_aspect = 0
+    option_all_bosses = 1
     option_all_bosses_any_character = 2
     option_random_subset = 3
     default = 0

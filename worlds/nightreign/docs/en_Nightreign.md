@@ -27,15 +27,15 @@ Nothing in-game. You'll see a log message/toast for flavor, but items in this ve
 
 Configurable via the `goal` option:
 
-- **all_bosses** (default): defeat every Nightlord you opted into, with every character you
+- **Night Aspect**: defeat Night Aspect, the vanilla game's own ending/credits boss - any one
+- **All Bosses** (default): defeat every Nightlord you opted into, with every character you
   opted into (only applies when `bosses_with_characters` is `boss_and_character` - in `boss`
   mode this is just "defeat every Nightlord you opted into").
-- **night_aspect**: defeat Night Aspect, the vanilla game's own ending/credits boss - any one
   of your opted-into characters' wins counts.
-- **all_bosses_any_character**: defeat every Nightlord you opted into at least once, with any
+- **All Bosses With Any Character**: defeat every Nightlord you opted into at least once, with any
   one of your opted-into characters - no need to clear every character x Nightlord
   combination.
-- **random_subset**: at generation time, a random number of specific "Defeat X as Y" objectives
+- **Random**: at generation time, a random number of specific "Defeat X as Y" objectives
   (bounded by `goal_random_min`/`goal_random_max`) are chosen from your included characters
   and Nightlords as the required set. Requires `bosses_with_characters` to be
   `boss_and_character`.
@@ -56,3 +56,6 @@ by design: an early alpha should surface uncertainty rather than silently mis-re
 
 Thanks to **thefifthmatt**, for their work on Elden Ring Nightreign randomization, which laid groundwork this
 project builds on.
+
+Thanks to the Cheat Engine data miners who laid the foundation
+for this work.

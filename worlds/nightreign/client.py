@@ -65,6 +65,10 @@ BUILD_MISMATCH_BACKOFF = 30
 # past the known ~10s airdrop with margin for the read/observation lag on top of it.
 EXPEDITION_ENTRY_SETTLE_SECONDS = 15
 
+# How long the overlay's "Weapon received"/"Talisman received" toast stays up after a successful
+# drop, before the overlay update loop clears it again - see _show_toast/poll_loop.
+TOAST_DURATION_SECONDS = 3.0
+
 
 def _safe_filename_component(text: str) -> str:
     return re.sub(r"[^A-Za-z0-9_-]+", "_", text).strip("_") or "unknown"
@@ -111,6 +115,8 @@ class NightreignContext(CommonContext):
     _delivered_weapon_keys: set
     _delivered_talisman_keys: set
     _locked_boss_warned: bool
+    _toast_text: Optional[str]
+    _toast_expiry: Optional[float]
 
     def __init__(self, server_address: Optional[str], password: Optional[str]):
         super().__init__(server_address, password)
@@ -137,6 +143,8 @@ class NightreignContext(CommonContext):
         self._delivered_weapon_keys = set()
         self._delivered_talisman_keys = set()
         self._locked_boss_warned = False
+        self._toast_text = None
+        self._toast_expiry = None
 
     def run_gui(self):
 
@@ -203,9 +211,10 @@ class NightreignContext(CommonContext):
             # gate_boss_access is only known once this packet arrives, but the game
             # process may already be attached from before this connect (its own
             # connect-transition in poll_loop already ran with gate_boss_access still
-            # False at the time) - build the writer/overlay here too, or that ordering
-            # would leave them permanently unbuilt for the rest of the session.
+            # False at the time) - build the writer here too, or that ordering
+            # would leave it permanently unbuilt for the rest of the session.
             self._ensure_gating_ready()
+            self._ensure_overlay_ready()
             asyncio.create_task(self._sync_event_flags())
             # Same race as gating above: the game process may already be attached from before
             # this connect, so build the item-drop writer here too, not just in poll_loop.
@@ -297,18 +306,27 @@ class NightreignContext(CommonContext):
                 )
 
     def _ensure_gating_ready(self) -> None:
-        """Builds the writer/overlay once both gate_boss_access and the game connection are
-        known, regardless of which arrived first this session - the game process attaching
-        and the AP 'Connected' packet (which is what sets gate_boss_access) race each other,
-        and either can win. Called from both sides of that race: here and from poll_loop's
-        connect-transition. A no-op once the writer already exists."""
+        """Builds the writer once both gate_boss_access and the game connection are known,
+        regardless of which arrived first this session - the game process attaching and the AP
+        'Connected' packet (which is what sets gate_boss_access) race each other, and either can
+        win. Called from both sides of that race: here and from poll_loop's connect-transition.
+        A no-op once the writer already exists."""
         if not self.gate_boss_access or not self.reader.connected or self.writer is not None:
             return
         self._try_build_writer()
-        if self.writer is not None and self.overlay is None:
-            self.overlay = NightreignOverlay(self.reader.pm.process_id)
-            self.overlay.start()
-            logger.info("Boss-gating overlay started (pid=%s).", self.reader.pm.process_id)
+
+    def _ensure_overlay_ready(self) -> None:
+        """Builds the overlay once the game connection is known - unlike the writer above, this
+        isn't gated on gate_boss_access: the Expedition debug panel (boss_id/detected boss/
+        character) is useful for diagnosing missed win checks for every player, not just those
+        using boss gating. Same race as _ensure_gating_ready (game-process attach vs. AP
+        'Connected' packet), so called from both of that method's call sites. A no-op once
+        already built."""
+        if not self.reader.connected or self.overlay is not None:
+            return
+        self.overlay = NightreignOverlay(self.reader.pm.process_id)
+        self.overlay.start()
+        logger.info("Overlay started (pid=%s).", self.reader.pm.process_id)
 
     def _warn_if_boss_locked(self, boss_name: str) -> None:
         """Logs (and records to run state) an Expedition started on a Nightlord whose Access item
@@ -455,8 +473,17 @@ class NightreignContext(CommonContext):
         rng = random.Random(f"{self.seed_name}:{index}:{player}:talisman")
         return {"item_id": rng.choice(list(TALISMAN_TABLE))}
 
+    def _show_toast(self, text: str) -> None:
+        """Arms the overlay's center-top toast for TOAST_DURATION_SECONDS. Timing lives here
+        (asyncio side), not in overlay.py - poll_loop's per-tick overlay update re-passes this
+        same text on every tick until the expiry it set has passed, then lets it go back to None,
+        so the Tk thread just displays whatever it's handed rather than running its own clock."""
+        self._toast_text = text
+        self._toast_expiry = time.monotonic() + TOAST_DURATION_SECONDS
+
     async def _deliver_pending_drops(
-        self, item_name: str, roll_fn, delivered_keys: set, event_type: str, log_label: str
+        self, item_name: str, roll_fn, delivered_keys: set, event_type: str, log_label: str,
+        toast_text: str,
     ) -> None:
         if self.item_drop_writer is None:
             return
@@ -480,6 +507,8 @@ class NightreignContext(CommonContext):
                 })
                 logger.info("Dropped %s 0x%X for index=%s player=%s.",
                             log_label, roll["item_id"], index, player)
+                if self.overlay is not None:
+                    self._show_toast(toast_text)
             else:
                 # Not removed from the pending set - _pending_drop_keys() will offer it again on
                 # the next Expedition entry, matching _sync_event_flags's retry shape.
@@ -489,13 +518,13 @@ class NightreignContext(CommonContext):
     async def _deliver_pending_weapons(self) -> None:
         await self._deliver_pending_drops(
             "Randomized Weapon", self._roll_weapon_drop, self._delivered_weapon_keys,
-            "weapon_drop", "randomized weapon"
+            "weapon_drop", "randomized weapon", "Weapon received"
         )
 
     async def _deliver_pending_talismans(self) -> None:
         await self._deliver_pending_drops(
             "Randomized Talisman", self._roll_talisman_drop, self._delivered_talisman_keys,
-            "talisman_drop", "randomized talisman"
+            "talisman_drop", "randomized talisman", "Talisman received"
         )
 
     # --- Per-run local state file ---
@@ -607,6 +636,7 @@ class NightreignContext(CommonContext):
                         if self.reader.connect():
                             logger.info("Connected to nightreign.exe")
                             self._ensure_gating_ready()
+                            self._ensure_overlay_ready()
                             if self.gate_boss_access:
                                 asyncio.create_task(self._sync_event_flags())
                             self._ensure_item_drop_ready()
@@ -691,22 +721,58 @@ class NightreignContext(CommonContext):
                         if self.randomize_talismans:
                             await self._deliver_pending_talismans()
 
-                if self.gate_boss_access and self.overlay is not None:
-                    owned_names = self._owned_item_names()
-                    locked_names = [
-                        name for name in ACCESS_NIGHTLORDS if f"{name} Access" not in owned_names
-                    ]
+                if self.overlay is not None:
+                    if self.gate_boss_access:
+                        owned_names = self._owned_item_names()
+                        locked_names = [
+                            name for name in ACCESS_NIGHTLORDS if f"{name} Access" not in owned_names
+                        ]
+                    else:
+                        locked_names = []
+
+                    # Expedition debug panel (boss_id/detected boss/character) - always updated
+                    # regardless of gate_boss_access, since win detection matters for every
+                    # player, not just those using boss gating (see _ensure_overlay_ready). Only
+                    # read boss_id/character while actually in an Expedition (in_hub is False,
+                    # not None/unreadable) - both are cheap reads, but there's nothing meaningful
+                    # to show while in the hub or mid-transition.
+                    in_run = in_hub is False
+                    debug_boss = self.reader.read_boss_id() if in_run else None
+                    boss_raw = debug_boss.raw if debug_boss is not None else None
+                    boss_desc = (
+                        (debug_boss.name or debug_boss.message or debug_boss.status)
+                        if debug_boss is not None else None
+                    )
+                    character = self.reader.read_character_class_name() if in_run else None
+
+                    # Center-top "Weapon received"/"Talisman received" toast - _show_toast() (in
+                    # _deliver_pending_drops) set the expiry once, at the moment of a successful
+                    # drop; every tick until that expiry passes re-sends the same text so the Tk
+                    # thread keeps showing it, and once it's passed this clears it back to None.
+                    toast_text = None
+                    if self._toast_expiry is not None:
+                        if time.monotonic() < self._toast_expiry:
+                            toast_text = self._toast_text
+                        else:
+                            self._toast_text = None
+                            self._toast_expiry = None
+
                     # pid is refreshed here too, not just at overlay construction - the game
                     # process can restart mid-session and reconnect under a new pid, but this
                     # already-running overlay is never torn down/rebuilt for that (see the
-                    # `self.overlay is None` guard above), so without this it would keep hunting
-                    # for a dead process's window and stay invisible forever.
-                    self.overlay.state.update(bool(in_hub), locked_names, self.reader.pm.process_id)
+                    # `self.overlay is None` guard in _ensure_overlay_ready), so without this it
+                    # would keep hunting for a dead process's window and stay invisible forever.
+                    self.overlay.state.update(
+                        bool(in_hub), locked_names, self.reader.pm.process_id,
+                        in_run, boss_raw, boss_desc, character, toast_text,
+                    )
 
                     # Logged only on change, not every tick - lets a log dump explain exactly
-                    # why the overlay panel was/wasn't visible at any point (it only draws
+                    # why the locked-boss panel was/wasn't visible at any point (it only draws
                     # while in_hub and locked_names is non-empty - see overlay.py's _tick),
-                    # without spamming a line 4x/second.
+                    # without spamming a line 4x/second. The Expedition debug panel isn't
+                    # included here since boss_id/character are expected to hold steady for a
+                    # whole run.
                     state_key = (bool(in_hub), tuple(locked_names))
                     if state_key != self._last_overlay_state:
                         self._last_overlay_state = state_key

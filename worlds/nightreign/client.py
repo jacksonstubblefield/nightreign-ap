@@ -483,8 +483,6 @@ class NightreignContext(CommonContext):
     async def _deliver_pending_drops(
         self, item_name: str, roll_fn, delivered_keys: set, event_type: str, log_label: str,
         toast_text: str,
-    async def _deliver_pending_drops(
-        self, item_name: str, roll_fn, delivered_keys: set, event_type: str, log_label: str
     ) -> None:
         if self.item_drop_writer is None:
             return
@@ -520,7 +518,6 @@ class NightreignContext(CommonContext):
         await self._deliver_pending_drops(
             "Randomized Weapon", self._roll_weapon_drop, self._delivered_weapon_keys,
             "weapon_drop", "randomized weapon", "Weapon received"
-            "weapon_drop", "randomized weapon"
         )
 
     async def _deliver_pending_talismans(self) -> None:

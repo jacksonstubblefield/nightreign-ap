@@ -8,23 +8,22 @@ selectable in-game. This overlay is how the player tells the two apart, without 
 menu-state-detection spike or per-row coordinate masking (deferred as a separate, time-boxed
 stretch goal - see the project plan).
 
-A second, mutually-exclusive panel mode: while in an active Expedition (not the hub), the same
-window relocates to the bottom-right corner and shows the raw win-detection reads (boss_id, the
-boss it resolved to, detected character) instead - added to help diagnose reports of wins that
-didn't produce a check. "Mutually exclusive" is deliberate: the hub-only locked-boss panel and the
-Expedition-only debug panel can never both apply at once, so this stays one small window that
-moves and re-labels itself rather than two - a full-client-area window that could host both
-corners at the same time was tried and reverted (see project history) after it broke mouse input
-in the game entirely; keeping this panel exactly the size it's always been sidesteps that class of
-bug rather than re-fixing it.
+A second, independent small window sits at the bottom-right corner and shows the raw win-detection
+reads (boss_id, the boss it resolved to, detected character) - added to help diagnose reports of
+wins that didn't produce a check, and shown in both the hub and an active Expedition (not just the
+latter) since a character-recognition bug tied to cosmetic skins turned out to need comparing
+readings on both sides of that boundary. It's a separate fixed-size Toplevel rather than a second
+mode of the locked-boss panel above because the two aren't mutually exclusive - both can be true
+at once in the hub (locked Nightlords top-right, boss/character bottom-right) - so each needs its
+own window rather than sharing one label. A full-client-area single window that tried to host both
+corners at once was attempted and reverted (see project history) after it broke mouse input in the
+game entirely; every panel here stays a small, fixed-size window that only ever moves, never
+resizes to cover more of the screen, to sidestep that class of bug rather than re-fixing it.
 
 A third, independent small window shows a brief "Weapon received"/"Talisman received" toast,
 center-top, on a successful randomize_weapons/randomize_talismans drop (see client.py's
-_show_toast). It's a separate fixed-size Toplevel rather than a third mode of the panel above
-because it isn't mutually exclusive with the Expedition debug panel - both can be true at once (a
-drop landing while the boss_id/character panel is already showing) - so it needs to be shown and
-positioned independently rather than sharing one window's single label. Same size/positioning
-discipline as the panel above: fixed size, never resized to cover more of the screen.
+_show_toast). Same reasoning as the debug panel above: it isn't mutually exclusive with the other
+two (a drop can land while both other panels are already showing), so it gets its own window too.
 
 Draws an external transparent window on top of the game (chroma-key transparency via tkinter's
 -transparentcolor, Windows-only) rather than hooking the game's own DirectX render pipeline -
@@ -102,18 +101,16 @@ class OverlayState:
     every tick, the same way visible/locked_names already are, means the overlay keeps following
     whatever process is actually live instead of silently hunting for a dead one forever.
 
-    Also carries the Expedition debug reads (in_run/boss_raw/boss_desc/character) for the second
-    panel mode - see the module docstring for why this is one panel that relocates rather than
-    two independent ones - and toast_text for the independent item-drop toast (None when there's
-    nothing to show; client.py owns the ~3 second timing and just stops passing text once it's
-    expired, see poll_loop/_show_toast)."""
+    Also carries the boss/character debug reads (boss_raw/boss_desc/character) for the second
+    panel - shown in both the hub and an Expedition, see the module docstring - and toast_text for
+    the independent item-drop toast (None when there's nothing to show; client.py owns the ~3
+    second timing and just stops passing text once it's expired, see poll_loop/_show_toast)."""
 
     def __init__(self, pid: int):
         self._lock = threading.Lock()
         self._visible = False
         self._locked_names: list[str] = []
         self._pid = pid
-        self._in_run = False
         self._boss_raw: Optional[int] = None
         self._boss_desc: Optional[str] = None
         self._character: Optional[str] = None
@@ -124,7 +121,6 @@ class OverlayState:
         visible: bool,
         locked_names: list[str],
         pid: int,
-        in_run: bool,
         boss_raw: Optional[int],
         boss_desc: Optional[str],
         character: Optional[str],
@@ -134,7 +130,6 @@ class OverlayState:
             self._visible = visible
             self._locked_names = list(locked_names)
             self._pid = pid
-            self._in_run = in_run
             self._boss_raw = boss_raw
             self._boss_desc = boss_desc
             self._character = character
@@ -142,13 +137,12 @@ class OverlayState:
 
     def snapshot(
         self,
-    ) -> tuple[bool, list[str], int, bool, Optional[int], Optional[str], Optional[str], Optional[str]]:
+    ) -> tuple[bool, list[str], int, Optional[int], Optional[str], Optional[str], Optional[str]]:
         with self._lock:
             return (
                 self._visible,
                 list(self._locked_names),
                 self._pid,
-                self._in_run,
                 self._boss_raw,
                 self._boss_desc,
                 self._character,
@@ -157,9 +151,11 @@ class OverlayState:
 
 
 class NightreignOverlay:
-    """Owns the overlay window's dedicated Tk thread. Construct once the game's process id is
-    known and gate_boss_access is confirmed true; call start() once. Update what it shows (and
-    which process it tracks) via .state.update(...) from any thread."""
+    """Owns the overlay windows' dedicated Tk thread. Construct once the game's process id is
+    known (see client.py's _ensure_overlay_ready - not gated on gate_boss_access, since the
+    boss/character debug panel and item-drop toast are useful regardless of that option); call
+    start() once. Update what it shows (and which process it tracks) via .state.update(...) from
+    any thread."""
 
     _BG = "#0a0a0a"  # chroma-keyed transparent background - anything drawn stays opaque
     _PANEL_WIDTH = 280
@@ -172,6 +168,7 @@ class NightreignOverlay:
         self.state = OverlayState(pid)
         self._thread: Optional[threading.Thread] = None
         self._root: Optional[tk.Tk] = None
+        self._debug_root: Optional[tk.Toplevel] = None
         self._toast_root: Optional[tk.Toplevel] = None
 
     def start(self) -> None:
@@ -202,8 +199,30 @@ class NightreignOverlay:
 
         self._make_click_through(root)
 
-        # Independent Toplevel, not a third mode of the panel above - see the module docstring
-        # for why (it isn't mutually exclusive with the Expedition debug panel).
+        # Independent Toplevel, not a second mode of the panel above - see the module docstring
+        # for why (it isn't mutually exclusive with the locked-boss panel).
+        debug_root = tk.Toplevel(root)
+        self._debug_root = debug_root
+        debug_root.overrideredirect(True)
+        debug_root.attributes("-topmost", True)
+        debug_root.configure(bg=self._BG)
+        debug_root.attributes("-transparentcolor", self._BG)
+        debug_root.geometry(f"{self._PANEL_WIDTH}x{self._PANEL_HEIGHT}+40+40")
+
+        debug_label = tk.Label(
+            debug_root,
+            text="",
+            fg="#5fd7ff",
+            bg=self._BG,
+            font=("Consolas", 10),
+            justify="left",
+            anchor="nw",
+        )
+        debug_label.pack(fill="both", expand=True, padx=8, pady=8)
+
+        self._make_click_through(debug_root)
+
+        # Independent Toplevel too, for the same reason - see the module docstring.
         toast_root = tk.Toplevel(root)
         self._toast_root = toast_root
         toast_root.overrideredirect(True)
@@ -224,7 +243,7 @@ class NightreignOverlay:
 
         self._make_click_through(toast_root)
 
-        self._tick(label, toast_label)
+        self._tick(label, debug_label, toast_label)
         root.mainloop()
 
     def _make_click_through(self, root: tk.Misc) -> None:
@@ -246,8 +265,8 @@ class NightreignOverlay:
             f"character: {character or 'unknown'}"
         )
 
-    def _tick(self, label: tk.Label, toast_label: tk.Label) -> None:
-        (visible, locked_names, pid, in_run, boss_raw, boss_desc, character,
+    def _tick(self, label: tk.Label, debug_label: tk.Label, toast_label: tk.Label) -> None:
+        (visible, locked_names, pid, boss_raw, boss_desc, character,
          toast_text) = self.state.snapshot()
         game_hwnd = _find_window_for_pid(pid)
         # WS_EX_TOPMOST floats above every other window system-wide, not just the game - without
@@ -257,48 +276,52 @@ class NightreignOverlay:
         is_game_foreground = game_hwnd is not None and user32.GetForegroundWindow() == game_hwnd
 
         show_locked = visible and locked_names and is_game_foreground
-        show_debug = (not show_locked) and in_run and is_game_foreground
+        # Shown in both the hub and an Expedition (not gated on run state) - see the module
+        # docstring for why.
+        show_debug = is_game_foreground
         show_toast = bool(toast_text) and is_game_foreground
 
         if show_locked:
             self._root.deiconify()
             label.configure(text="Locked (not yet unlocked):\n" + "\n".join(f"- {n}" for n in locked_names))
-            self._reposition(game_hwnd, corner="top-right")
-        elif show_debug:
-            self._root.deiconify()
-            label.configure(text=self._debug_text(boss_raw, boss_desc, character))
-            self._reposition(game_hwnd, corner="bottom-right")
+            self._reposition(self._root, game_hwnd, self._PANEL_WIDTH, self._PANEL_HEIGHT, corner="top-right")
         else:
             self._root.withdraw()
+
+        if show_debug:
+            self._debug_root.deiconify()
+            debug_label.configure(text=self._debug_text(boss_raw, boss_desc, character))
+            self._reposition(
+                self._debug_root, game_hwnd, self._PANEL_WIDTH, self._PANEL_HEIGHT, corner="bottom-right"
+            )
+        else:
+            self._debug_root.withdraw()
 
         if show_toast:
             self._toast_root.deiconify()
             toast_label.configure(text=toast_text)
-            self._reposition_toast(game_hwnd)
+            self._reposition(self._toast_root, game_hwnd, self._TOAST_WIDTH, self._TOAST_HEIGHT, corner="top-center")
         else:
             self._toast_root.withdraw()
 
-        self._root.after(250, self._tick, label, toast_label)
+        self._root.after(250, self._tick, label, debug_label, toast_label)
 
-    def _reposition(self, game_hwnd: int, corner: str) -> None:
+    @staticmethod
+    def _reposition(window: tk.Misc, game_hwnd: int, panel_width: int, panel_height: int, corner: str) -> None:
         client_rect = _get_client_rect_on_screen(game_hwnd)
         if client_rect is None:
             return
         left, top, width, height = client_rect
-        # Anchored to a fixed corner of the game window with a fixed inset - v1 doesn't track the
-        # native Expeditions list's own position (that's the deferred row-masking stretch goal).
-        # Right-hand corners read less jarring than left, which tends to sit over other UI.
-        # Panel size never changes between the two modes (see the module docstring for why) -
-        # only where this fixed-size window sits.
-        x = left + width - self._PANEL_WIDTH - self._INSET
-        y = top + self._INSET if corner == "top-right" else top + height - self._PANEL_HEIGHT - self._INSET
-        self._root.geometry(f"+{x}+{y}")
-
-    def _reposition_toast(self, game_hwnd: int) -> None:
-        client_rect = _get_client_rect_on_screen(game_hwnd)
-        if client_rect is None:
-            return
-        left, top, width, _height = client_rect
-        x = left + (width - self._TOAST_WIDTH) // 2
-        y = top + self._INSET
-        self._toast_root.geometry(f"+{x}+{y}")
+        # Anchored to a fixed corner (or top-center, for the toast) of the game window with a
+        # fixed inset - v1 doesn't track the native Expeditions list's own position (that's the
+        # deferred row-masking stretch goal). Right-hand corners read less jarring than left,
+        # which tends to sit over other UI. Every panel is a fixed size (see the module
+        # docstring) - this only ever moves a window, never resizes one.
+        inset = NightreignOverlay._INSET
+        if corner == "top-right":
+            x, y = left + width - panel_width - inset, top + inset
+        elif corner == "bottom-right":
+            x, y = left + width - panel_width - inset, top + height - panel_height - inset
+        else:  # top-center
+            x, y = left + (width - panel_width) // 2, top + inset
+        window.geometry(f"+{x}+{y}")

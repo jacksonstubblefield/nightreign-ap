@@ -396,11 +396,22 @@ class NightreignMemoryReader:
         return self._safe_read_uint(base + CHARACTER_CLASS_OFFSET)
 
     def read_character_class_name(self) -> Optional[str]:
-        """Returns the character class name (see CHARACTER_CLASS_NAMES) or None if unreadable."""
+        """Returns the character class name (see CHARACTER_CLASS_NAMES) or None if unreadable.
+
+        The raw value isn't just the base class id - equipping a non-default garb (cosmetic
+        outfit) adds a per-skin offset on top of it: +0 (own default look), +10 (Dawn),
+        +20 (Darkness), +30/+40 (Rememberance), +50 (Dark Souls A), +60 (Dark Souls B) - live-
+        confirmed via CE against two different characters (Wylder 50000->50020, Raider
+        50400->50420, both with the "Darkness" garb equipped). Base class ids are clean hundreds
+        (50000, 50100, ...), so flooring to the nearest hundred before the lookup recovers the
+        class regardless of which garb is equipped. Without this, any player using a non-default
+        garb in `bosses_with_characters=boss_and_character` mode had every win silently dropped -
+        see client.py's _handle_win(), which skips sending the check entirely when this returns
+        None."""
         class_id = self.read_character_class()
         if class_id is None:
             return None
-        return CHARACTER_CLASS_NAMES.get(class_id)
+        return CHARACTER_CLASS_NAMES.get((class_id // 100) * 100)
 
     def read_boss_id(self) -> BossIdReading:
         """Raw boss_id plus roster match, per the Phase 0 design decision:

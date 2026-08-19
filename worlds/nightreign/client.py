@@ -730,20 +730,15 @@ class NightreignContext(CommonContext):
                     else:
                         locked_names = []
 
-                    # Expedition debug panel (boss_id/detected boss/character) - always updated
-                    # regardless of gate_boss_access, since win detection matters for every
-                    # player, not just those using boss gating (see _ensure_overlay_ready). Only
-                    # read boss_id/character while actually in an Expedition (in_hub is False,
-                    # not None/unreadable) - both are cheap reads, but there's nothing meaningful
-                    # to show while in the hub or mid-transition.
-                    in_run = in_hub is False
-                    debug_boss = self.reader.read_boss_id() if in_run else None
-                    boss_raw = debug_boss.raw if debug_boss is not None else None
-                    boss_desc = (
-                        (debug_boss.name or debug_boss.message or debug_boss.status)
-                        if debug_boss is not None else None
-                    )
-                    character = self.reader.read_character_class_name() if in_run else None
+                    # Boss/character debug panel - always updated regardless of gate_boss_access,
+                    # since win detection matters for every player, not just those using boss
+                    # gating (see _ensure_overlay_ready). Read every tick, in both the hub and an
+                    # Expedition - not just the latter - since a character-recognition bug tied to
+                    # cosmetic skins needs comparing readings on both sides of that boundary.
+                    debug_boss = self.reader.read_boss_id()
+                    boss_raw = debug_boss.raw
+                    boss_desc = debug_boss.name or debug_boss.message or debug_boss.status
+                    character = self.reader.read_character_class_name()
 
                     # Center-top "Weapon received"/"Talisman received" toast - _show_toast() (in
                     # _deliver_pending_drops) set the expiry once, at the moment of a successful
@@ -764,13 +759,13 @@ class NightreignContext(CommonContext):
                     # would keep hunting for a dead process's window and stay invisible forever.
                     self.overlay.state.update(
                         bool(in_hub), locked_names, self.reader.pm.process_id,
-                        in_run, boss_raw, boss_desc, character, toast_text,
+                        boss_raw, boss_desc, character, toast_text,
                     )
 
                     # Logged only on change, not every tick - lets a log dump explain exactly
                     # why the locked-boss panel was/wasn't visible at any point (it only draws
                     # while in_hub and locked_names is non-empty - see overlay.py's _tick),
-                    # without spamming a line 4x/second. The Expedition debug panel isn't
+                    # without spamming a line 4x/second. The boss/character debug panel isn't
                     # included here since boss_id/character are expected to hold steady for a
                     # whole run.
                     state_key = (bool(in_hub), tuple(locked_names))

@@ -66,6 +66,19 @@ class NightreignGateBossAndCharacterTest(WorldTestBase):
     options = {"gate_boss_access": True, "bosses_with_characters": "boss_and_character"}
 
 
+class NightreignNoFillerSourceTest(WorldTestBase):
+    game = "Elden Ring Nightreign"
+    auto_construct = False
+    options = {"receive_weapons": False, "receive_talismans": False}
+
+    def test_disabling_both_weapons_and_talismans_raises(self) -> None:
+        # Trophy items (the old always-available flavor filler) were removed once Randomized
+        # Weapon/Talisman gave real in-game drops, so with both of those off there is no filler
+        # item left for get_filler_item_name() to choose from.
+        with self.assertRaises(OptionError):
+            self.world_setup()
+
+
 # --- `goal` option coverage ---
 #
 # World.create_regions() builds self.goal_groups (a list of groups, each satisfied by ANY one

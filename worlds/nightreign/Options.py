@@ -86,6 +86,22 @@ class GateBossAccess(Toggle):
     default = 1
 
 
+class ReceiveWeapons(Toggle):
+    """If enabled, includes randomized weapons as filler items.
+    """
+
+    display_name = "Receive Weapons"
+    default = 1
+
+
+class ReceiveTalismans(Toggle):
+    """If enabled, includes randomized talismans as filler items.
+    """
+
+    display_name = "Receive Talismans"
+    default = 1
+
+
 class Goal(Choice):
     """What this slot needs to accomplish to complete its goal.
 
@@ -152,6 +168,8 @@ class NightreignOptions(PerGameCommonOptions):
     bosses_with_characters: BossesWithCharacters
     starting_boss: StartingBoss
     gate_boss_access: GateBossAccess
+    receive_weapons: ReceiveWeapons
+    receive_talismans: ReceiveTalismans
     goal: Goal
     goal_random_min: GoalRandomMin
     goal_random_max: GoalRandomMax

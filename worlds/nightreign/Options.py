@@ -135,6 +135,23 @@ class Goal(Choice):
     default = 0
 
 
+class EnableEverdarkChecks(Toggle):
+    """If enabled, adds a separate "Defeat Everdark X" location per Nightlord (mirroring
+    bosses_with_characters, same as normal boss locations) alongside the regular ones. Never
+    required for your goal, regardless of the goal option chosen - purely additional, optional
+    checks.
+
+    DISCLAIMER: Everdark Sovereigns only appear via an external, rotating weekly schedule this
+    world has no control over and cannot unlock for you - some weeks a given Nightlord's Everdark
+    form may not be available at all. Enabling this option is an explicit acknowledgment that
+    reaching an Everdark expedition (including via third-party tools, if you choose to use one) is
+    entirely your own responsibility, not something this world or its client manages.
+    """
+
+    display_name = "Enable Everdark Checks"
+    default = 0
+
+
 class GoalRandomMin(Range):
     """Minimum number of specific "Defeat X as Y" objectives to require, when goal is random_subset.
 
@@ -170,6 +187,7 @@ class NightreignOptions(PerGameCommonOptions):
     gate_boss_access: GateBossAccess
     receive_weapons: ReceiveWeapons
     receive_talismans: ReceiveTalismans
+    enable_everdark_checks: EnableEverdarkChecks
     goal: Goal
     goal_random_min: GoalRandomMin
     goal_random_max: GoalRandomMax

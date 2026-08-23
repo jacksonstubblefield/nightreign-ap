@@ -1,25 +1,28 @@
-from BaseClasses import Region, Tutorial
+from BaseClasses import LocationProgressType, Region, Tutorial
 from Options import OptionError
 from worlds.AutoWorld import World, WebWorld
-from worlds.LauncherComponents import Component, Type, components, launch_subprocess
+from worlds.LauncherComponents import Component, Type, components, icon_paths, launch_subprocess
 
-from .game_data import ACCESS_NIGHTLORDS, CHARACTERS, NIGHTLORDS, starting_free_nightlords
+from .game_data import (ACCESS_NIGHTLORDS, CHARACTERS, EVERDARK_NIGHTLORDS, NIGHTLORDS,
+                        starting_free_nightlords)
 from .Items import FILLER_ITEM_NAMES, NightreignItem, item_name_to_id, item_table
-from .Locations import NightreignLocation, location_name, location_name_boss_only, location_name_to_id
+from .Locations import (NightreignLocation, location_name, location_name_boss_only,
+                        location_name_everdark, location_name_everdark_boss_only,
+                        location_name_to_id)
 from .Options import NightreignOptions
 
 
 def launch_client():
-    # Lazy import so `pymem` (required by client.py's memory_reader use)
-    # isn't imported at world-load time - Generate.py and the webhost load
-    # every world's __init__.py unconditionally, but only actually need the
-    # client when a user launches it from the Archipelago Launcher.
+    # Lazy import so `pymem` isn't imported at world-load time - Generate.py and the webhost
+    # load every world's __init__.py unconditionally, but only need the client when a user
+    # launches it from the Archipelago Launcher.
     from .client import launch
 
     launch_subprocess(launch, name="NightreignClient")
 
 
-components.append(Component("Nightreign Client", func=launch_client, component_type=Type.CLIENT))
+components.append(Component("Nightreign Client", func=launch_client, component_type=Type.CLIENT, icon="nightreign"))
+icon_paths["nightreign"] = f"ap:{__name__}/data/icon.png"
 
 
 class NightreignWeb(WebWorld):
@@ -45,7 +48,10 @@ class NightreignWorld(World):
     receiving that Nightlord's Access item - written into the running game
     process where the game supports it (all but Tricephalos, which has no
     gating flag and is tracked overlay-side only); otherwise received items
-    are flavorful and have no in-game effect.
+    are flavorful and have no in-game effect. With enable_everdark_checks on, defeating a
+    Nightlord's Everdark Sovereign variant is a separate, optional location - never required for
+    the goal, since Everdark availability depends on an external weekly rotation this world can't
+    unlock or guarantee (see Options.py's disclaimer).
     """
 
     game = "Elden Ring Nightreign"
@@ -67,15 +73,9 @@ class NightreignWorld(World):
     goal_random_count: int
 
     def generate_early(self) -> None:
-        # This tracker has no item/location gating at all (topology_present
-        # = False, every location reachable from the start), so there's no
-        # CollectionState-derived condition that could reflect real
-        # progress - the actual goal (see the `goal` option) can only be
-        # observed live, by the client, via ctx.missing_locations (see
-        # client.py's _maybe_declare_goal). Set explicitly (rather than
-        # relying on the silent BaseClasses default of the same value) so
-        # that choice is visible in code, per docs/adding games.md's "a set
-        # completion condition" requirement.
+        # No item/location gating here (topology_present = False), so there's no CollectionState
+        # condition that reflects real progress - the goal is only observed live by the client
+        # (see client.py's _maybe_declare_goal). Set explicitly, per docs/adding games.md.
         self.multiworld.completion_condition[self.player] = lambda state: True
 
         if not self.options.receive_weapons and not self.options.receive_talismans:
@@ -126,12 +126,9 @@ class NightreignWorld(World):
     def create_regions(self) -> None:
         included_nightlords = self.options.included_nightlords.value
 
-        # Iterate CHARACTERS/NIGHTLORDS (fixed order) rather than the option
-        # sets directly, so location creation order - and therefore id
-        # assignment order for anything downstream that relies on it - stays
-        # deterministic regardless of set iteration order. Each location is
-        # paired with the Nightlord it defeats so the access rule below can
-        # gate it without re-parsing "Defeat X" / "Defeat X as Y" apart.
+        # Iterate CHARACTERS/NIGHTLORDS (fixed order) rather than the option sets directly, so
+        # location creation order stays deterministic. Each location is paired with the Nightlord
+        # it defeats so the access rule below can gate it without re-parsing the location name.
         if self.options.bosses_with_characters == "boss_and_character":
             included_characters = self.options.included_characters.value
             locations = [
@@ -147,13 +144,38 @@ class NightreignWorld(World):
                 for nightlord in NIGHTLORDS
                 if nightlord in included_nightlords
             ]
-        self.active_locations = [name for name, _nightlord in locations]
 
-        # goal_groups: a list of groups, where each group is satisfied by ANY one of its
-        # location ids being checked, and the overall goal is complete once EVERY group is
-        # satisfied (see client.py's _goal_complete). This is what actually varies across the
-        # `goal` option's modes - the location set built above never changes, so filler/item
-        # pool sizing (create_items) stays identical regardless of which goal is picked.
+        # enable_everdark_checks locations mirror bosses_with_characters exactly like the normal
+        # locations above, but over EVERDARK_NIGHTLORDS (excludes Night Aspect, which has no
+        # Everdark form) and are gated behind the option entirely - empty list when it's off.
+        # Deliberately kept out of goal_groups below (see Options.py's disclaimer): Everdark
+        # Sovereign availability depends on an external weekly rotation this world can't unlock or
+        # guarantee, so requiring one for the goal could make a seed impossible to finish.
+        everdark_locations = []
+        if self.options.enable_everdark_checks:
+            everdark_nightlords = [nl for nl in included_nightlords if nl in EVERDARK_NIGHTLORDS]
+            if self.options.bosses_with_characters == "boss_and_character":
+                included_characters = self.options.included_characters.value
+                everdark_locations = [
+                    (location_name_everdark(character, nightlord), nightlord)
+                    for character in CHARACTERS
+                    if character in included_characters
+                    for nightlord in EVERDARK_NIGHTLORDS
+                    if nightlord in everdark_nightlords
+                ]
+            else:
+                everdark_locations = [
+                    (location_name_everdark_boss_only(nightlord), nightlord)
+                    for nightlord in EVERDARK_NIGHTLORDS
+                    if nightlord in everdark_nightlords
+                ]
+
+        self.active_locations = [name for name, _nightlord in locations + everdark_locations]
+
+        # goal_groups: a list of groups, each satisfied by ANY one of its location ids being
+        # checked; the goal is complete once EVERY group is satisfied (see client.py's
+        # _goal_complete). This varies by `goal` option; the location set above never changes.
+        # Built from `locations` only - everdark_locations is never goal-eligible, see above.
         goal = self.options.goal.current_key
         ids_by_name = self.location_name_to_id
         if goal == "night_aspect":
@@ -173,19 +195,35 @@ class NightreignWorld(World):
             self.goal_groups = [[ids_by_name[name]] for name, _nightlord in locations]
 
         menu = Region("Menu", self.player, self.multiworld)
-        for name, nightlord in locations:
+
+        def _make_location(name: str, nightlord: str, everdark: bool) -> NightreignLocation:
             location = NightreignLocation(self.player, name, self.location_name_to_id[name], menu)
-            # Without this, every location is unconditionally reachable and the fill
-            # algorithm has no idea that defeating a Nightlord requires having earned
-            # it first - it can (and did) place the only route to a Nightlord behind a
-            # location that's itself unreachable from starting_boss, softlocking the
-            # run. gate_boss_access off means no Access items exist at all, so no rule
-            # is needed there either.
+            # Without this, the fill algorithm has no idea defeating a Nightlord requires
+            # earning it first - it can (and did) place the only route to a Nightlord behind an
+            # unreachable location, softlocking the run. gate_boss_access off needs no rule.
+            # Everdark locations reuse the same base Nightlord's Access item - there's no separate
+            # "Everdark X Access" item, since Everdark is a variant fight against the same
+            # Nightlord, not a distinct one.
             if self.options.gate_boss_access and nightlord not in self.freed_nightlords:
                 location.access_rule = lambda state, nightlord=nightlord: state.has(
                     f"{nightlord} Access", self.player
                 )
-            menu.locations.append(location)
+            if everdark:
+                # EXCLUDED stops the fill algorithm from ever placing a progression/useful item
+                # here (see BaseClasses.Location.can_fill) - keeping Everdark locations out of
+                # goal_groups isn't enough on its own, since AP can still place an Access item
+                # *other* locations depend on into one. A real generated seed did exactly that
+                # (starting_boss=Tricephalos: "Defeat Everdark Tricephalos" held the only copy of
+                # "Sentient Pest Access", the sole route out of the starting Nightlord) - since
+                # Everdark availability is an external, uncertain weekly rotation (see Options.py's
+                # disclaimer), nothing else in the graph may ever depend on reaching one.
+                location.progress_type = LocationProgressType.EXCLUDED
+            return location
+
+        for name, nightlord in locations:
+            menu.locations.append(_make_location(name, nightlord, everdark=False))
+        for name, nightlord in everdark_locations:
+            menu.locations.append(_make_location(name, nightlord, everdark=True))
         self.multiworld.regions.append(menu)
 
     def create_items(self) -> None:
@@ -203,10 +241,8 @@ class NightreignWorld(World):
         self.multiworld.itempool += [self.create_item(name) for name in access_names]
 
         # access_names is always <= active_locations: location count is
-        # |included_characters| * |included_nightlords|, which is at least
-        # |included_nightlords| (and therefore at least len(access_names))
-        # whenever active_locations is non-empty, i.e. at least one
-        # character is included.
+        # |included_characters| * |included_nightlords|, at least |included_nightlords|
+        # (and therefore at least len(access_names)) whenever it's non-empty.
         filler_count = len(self.active_locations) - len(access_names)
         self.multiworld.itempool += [self.create_filler() for _ in range(filler_count)]
 
@@ -227,6 +263,7 @@ class NightreignWorld(World):
             "gate_boss_access": bool(self.options.gate_boss_access),
             "receive_weapons": bool(self.options.receive_weapons),
             "receive_talismans": bool(self.options.receive_talismans),
+            "enable_everdark_checks": bool(self.options.enable_everdark_checks),
             "starting_boss": self.starting_boss,
             "bosses_with_characters": self.options.bosses_with_characters.current_key,
             "goal": self.options.goal.current_key,

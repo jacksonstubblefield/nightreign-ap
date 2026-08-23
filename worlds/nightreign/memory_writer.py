@@ -123,11 +123,8 @@ class NightreignMemoryWriter:
 
 
 # --- Item-drop write primitive (randomized-weapon filler) ---
-#
 # Ported from the CT table's "Sly - ItemDrop" script (contributor Volkov_ilya37) - see
-# game_data.py's MAPITEMMAN_AOB/ITEMDROP_CALL_AOB/TLS_SLOT_FETCHER_ITEMDROP_AOB/ABOBA_AOB for
-# provenance of the addresses resolved into an ItemDropTargets by
-# NightreignMemoryReader.resolve_item_drop_targets().
+# game_data.py's MAPITEMMAN_AOB/ITEMDROP_CALL_AOB/TLS_SLOT_FETCHER_ITEMDROP_AOB/ABOBA_AOB.
 
 def _resolve_remote_tls_set_value(pm: pymem.Pymem) -> int:
     """TlsSetValue's address in the target process. The CT script calls it by bare name, which

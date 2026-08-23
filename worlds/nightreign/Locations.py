@@ -2,7 +2,7 @@ from typing import NamedTuple
 
 from BaseClasses import Location
 
-from .game_data import CHARACTERS, NIGHTLORDS
+from .game_data import CHARACTERS, EVERDARK_NIGHTLORDS, NIGHTLORDS
 
 
 class NightreignLocation(Location):
@@ -45,13 +45,35 @@ def location_name_boss_only(nightlord: str) -> str:
     return f"Defeat {nightlord}"
 
 
-# One location per (character x Nightlord) combination, plus one boss-only location per Nightlord -
-# the full matrix for both bosses_with_characters modes, regardless of a given player's
-# included_characters/included_nightlords/bosses_with_characters options. World.create_regions() filters
-# this down per-player; this table just needs to cover every name/id any player could pick.
-#
-# The boss-only entries are appended after the per-character range (not interleaved) so existing
-# per-character location ids never shift for seeds already generated before bosses_with_characters existed.
+def location_name_everdark(character: str, nightlord: str) -> str:
+    """Generates location names for the enable_everdark_checks option in BossWithCharacter mode.
+
+    Args:
+        character (str): Nightreign character name
+        nightlord (str): Nightlord name (must have an Everdark form - see EVERDARK_NIGHTLORDS)
+
+    Returns:
+        str: The generated location name.
+    """
+    return f"Defeat Everdark {nightlord} as {character}"
+
+
+def location_name_everdark_boss_only(nightlord: str) -> str:
+    """Generates location names for the enable_everdark_checks option in Boss mode.
+
+    Args:
+        nightlord (str): Nightlord name (must have an Everdark form - see EVERDARK_NIGHTLORDS)
+
+    Returns:
+        str: The generated location name.
+    """
+    return f"Defeat Everdark {nightlord}"
+
+
+# One location per (character x Nightlord), plus one boss-only location per Nightlord, plus the
+# same two shapes again for Everdark (over EVERDARK_NIGHTLORDS, which excludes Night Aspect) - the
+# full matrix regardless of a player's options (World.create_regions() filters it per-player).
+# Each table is appended after the last, never interleaved, so ids never shift for older seeds.
 _per_character_table = {
     location_name(character, nightlord): LocationData(BASE_ID + i)
     for i, (character, nightlord) in enumerate(
@@ -62,7 +84,25 @@ _boss_only_table = {
     location_name_boss_only(nightlord): LocationData(BASE_ID + len(_per_character_table) + i)
     for i, nightlord in enumerate(NIGHTLORDS)
 }
-location_table = _per_character_table | _boss_only_table
+_everdark_per_character_table = {
+    location_name_everdark(character, nightlord): LocationData(
+        BASE_ID + len(_per_character_table) + len(_boss_only_table) + i
+    )
+    for i, (character, nightlord) in enumerate(
+        (character, nightlord) for character in CHARACTERS for nightlord in EVERDARK_NIGHTLORDS
+    )
+}
+_everdark_boss_only_table = {
+    location_name_everdark_boss_only(nightlord): LocationData(
+        BASE_ID + len(_per_character_table) + len(_boss_only_table)
+        + len(_everdark_per_character_table) + i
+    )
+    for i, nightlord in enumerate(EVERDARK_NIGHTLORDS)
+}
+location_table = (
+    _per_character_table | _boss_only_table
+    | _everdark_per_character_table | _everdark_boss_only_table
+)
 
 location_name_to_id = {name: data.id for name, data in location_table.items()}
 lookup_id_to_name = {data.id: name for name, data in location_table.items()}

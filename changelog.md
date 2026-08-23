@@ -1,5 +1,7 @@
 # Changelog
 
+0.3.0: Alpha release - Everdark Soverign support
+
 0.2.3: Fixed a bug where skins were causing characters to be unknown
 
 0.2.2: Added a debug overlay while on an expedition to track character and boss id variance

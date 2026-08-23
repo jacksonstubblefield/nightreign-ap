@@ -1,4 +1,4 @@
-from BaseClasses import Region, Tutorial
+from BaseClasses import LocationProgressType, Region, Tutorial
 from Options import OptionError
 from worlds.AutoWorld import World, WebWorld
 from worlds.LauncherComponents import Component, Type, components, icon_paths, launch_subprocess
@@ -195,7 +195,8 @@ class NightreignWorld(World):
             self.goal_groups = [[ids_by_name[name]] for name, _nightlord in locations]
 
         menu = Region("Menu", self.player, self.multiworld)
-        for name, nightlord in locations + everdark_locations:
+
+        def _make_location(name: str, nightlord: str, everdark: bool) -> NightreignLocation:
             location = NightreignLocation(self.player, name, self.location_name_to_id[name], menu)
             # Without this, the fill algorithm has no idea defeating a Nightlord requires
             # earning it first - it can (and did) place the only route to a Nightlord behind an
@@ -207,7 +208,22 @@ class NightreignWorld(World):
                 location.access_rule = lambda state, nightlord=nightlord: state.has(
                     f"{nightlord} Access", self.player
                 )
-            menu.locations.append(location)
+            if everdark:
+                # EXCLUDED stops the fill algorithm from ever placing a progression/useful item
+                # here (see BaseClasses.Location.can_fill) - keeping Everdark locations out of
+                # goal_groups isn't enough on its own, since AP can still place an Access item
+                # *other* locations depend on into one. A real generated seed did exactly that
+                # (starting_boss=Tricephalos: "Defeat Everdark Tricephalos" held the only copy of
+                # "Sentient Pest Access", the sole route out of the starting Nightlord) - since
+                # Everdark availability is an external, uncertain weekly rotation (see Options.py's
+                # disclaimer), nothing else in the graph may ever depend on reaching one.
+                location.progress_type = LocationProgressType.EXCLUDED
+            return location
+
+        for name, nightlord in locations:
+            menu.locations.append(_make_location(name, nightlord, everdark=False))
+        for name, nightlord in everdark_locations:
+            menu.locations.append(_make_location(name, nightlord, everdark=True))
         self.multiworld.regions.append(menu)
 
     def create_items(self) -> None:

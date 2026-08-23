@@ -10,6 +10,19 @@
   this game's `.apworld` file installed via the Launcher's "Install APWorld" button (or dropped into your
   Archipelago install's `custom_worlds` folder if running from source).
 
+## Starting a New Save
+Play on a fresh save (or a separate save slot) for your Archipelago run, not one where every Nightlord is already
+unlocked. With `gate_boss_access` on (the default), the world assumes it's starting from vanilla's own "only your
+`starting_boss` is available" state and reveals the rest as you receive their Access items - if every Nightlord is
+already unlocked in-game before you connect, there's nothing left for that reveal to do, and the intended
+progression won't be visible.
+
+## Playing Offline
+Launch the game offline (disconnect from the internet, or use Steam's offline mode) before connecting the client.
+This project reads and writes the game's live memory, which requires Anti-Cheat to be disabled (see below) - Anti-
+Cheat only runs during an online session, so playing offline is what makes running without it possible in the
+first place, and is required every time you play with this client, not just a one-time setup step.
+
 ## Turning off Anti-Cheat
 This can't be run with Anti-Cheat because it modifies the game's memory. There's a guide on how to disable Anti-Cheat [here](https://www.nexusmods.com/eldenringnightreign/mods/5).
 

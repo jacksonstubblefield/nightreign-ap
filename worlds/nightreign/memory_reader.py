@@ -44,11 +44,9 @@ try:
         WORLDCHRMAN_ANIM_OFFSETS,
     )
 except ImportError:
-    # Run directly as a script (python memory_reader.py), not as part of the
-    # worlds.nightreign package - `worlds/__init__.py` pulls in the entire AP
-    # core (NetUtils, Utils, ...), which would defeat the point of this
-    # module being independently testable. Fall back to a plain sys.path
-    # import of the sibling module instead.
+    # Run directly as a script, not as part of the worlds.nightreign package -
+    # `worlds/__init__.py` pulls in the entire AP core, which would defeat the point of this
+    # module being independently testable. Fall back to a plain sys.path import instead.
     import os
     import sys
 
@@ -73,32 +71,43 @@ except ImportError:
 
 PROCESS_NAME = "nightreign.exe"
 
-# From the CE table's "Baza" pointer registry. Both are the x64
-# `mov reg, [rip+disp32]` shape: the pointer *slot* address is
-# `match_addr + 7 + signed_disp32`, and that slot holds the live object
-# address for the current process run (re-read it on every access rather
-# than caching the dereferenced value - it can go transiently null during
-# scene transitions).
+# From the CE table's "Baza" pointer registry. Both are the x64 `mov reg, [rip+disp32]` shape:
+# the pointer *slot* address is `match_addr + 7 + signed_disp32`, and that slot holds the live
+# object address - re-read it on every access rather than caching, it can go null mid-transition.
 GAMEMAN_AOB = "48 8B 05 ?? ?? ?? ?? 83 B8 ?? ?? ?? ?? 00 ?? ?? ?? ?? ?? ?? 48 8D 4C 24"
 GAMEDATAMAN_AOB = "48 8B 0D ?? ?? ?? ?? F3 48 0F 2C C0"
 
-# EventFlagBaseA / EventFlag - the boss-unlock write path (see memory_writer.py). From the CE
-# table's "Hexinton Events" script, confirmed live: EventFlagBaseA(EventFlag_value, flag, on) sets
-# the given EventFlag. Resolved lazily via resolve_event_flag_targets(), NOT inside connect()
-# alongside GAMEMAN_AOB/GAMEDATAMAN_AOB - a future patch that only breaks these two AOBs must not
-# take down the read-only tracker for players who never opted into write access.
+# EventFlagBaseA / EventFlag - the boss-unlock write path (see memory_writer.py). Resolved lazily
+# via resolve_event_flag_targets(), not in connect(), so a patch breaking only these two AOBs
+# can't take down the read-only tracker for players who never opted into writes.
 EVENTFLAG_PTR_AOB = "48 8B 1D ?? ?? ?? ?? 49 8B F0 48 8B F9"
 EVENTFLAG_BASE_A_AOB = "48 89 5C 24 08 44 8B 49 1C 44"
 
 # GameMan-relative offsets.
 HUB_FLAG_OFFSET = 0xB40          # bit 0x10000 set => not in an active run
-BOSS_ID_OFFSET = 0xB50           # small clean int, +~10 per boss, drifts +/-3
+BOSS_ID_OFFSET = 0xB50           # small clean int, +~10 per boss, drifts +/-3 - identifies
+                                  # *which* boss, NOT normal-vs-Everdark (see EVERDARK_FLAG_OFFSET
+                                  # below: a same-boss +1 delta was directly disproven live - a
+                                  # confirmed normal Tricephalos run also read the value previously
+                                  # assumed to mean "Everdark Tricephalos")
 OUTCOME_PULSE_OFFSET = 0xAF1     # byte; transient 0->1 pulse on a win only
 
 # GameDataMan resolves to an object whose +0x8 qword is the player-data base;
 # character class lives on that base, not on GameMan.
 PLAYER_DATA_PTR_OFFSET = 0x8
 CHARACTER_CLASS_OFFSET = 0xE8
+
+# GameDataMan-relative byte: 0x00 normal, 0x01 Everdark. Like BOSS_ID_OFFSET, only populates once
+# actually loaded into an expedition (reads 0x00 from the pre-launch Target menu regardless of
+# selection). Found via `nightreign_spike/` on the `everdark-data-mining` branch: a full-struct
+# GameDataMan diff between two independent normal Tricephalos runs was subtracted from a
+# normal-vs-Everdark diff to remove per-expedition-instance noise (map/loot/spawn content differs
+# between any two expedition rolls, Everdark or not - the naive diff alone had 450 offsets and was
+# nearly useless); exactly one offset survived the subtraction. Confirmed stable across all 3
+# required corroborating bosses (Tricephalos, Sentient Pest, Augur) before being trusted - see
+# nightreign-roadmap memory for the full methodology and the two false leads (a boss_id+1 pattern,
+# and this same struct's +0xFA byte, a UI-interaction counter) ruled out first.
+EVERDARK_FLAG_OFFSET = 0xE0
 
 UNKNOWN_BOSS_MESSAGE = (
     "boss_id {boss_id} not found - please report this to the mod owner "
@@ -249,11 +258,9 @@ class NightreignMemoryReader:
         Lua resolver exactly: `address = match + offset`, then `address + 7 + disp32`."""
         pattern = _aob_to_regex_bytes(aob)
         module = pymem.process.module_from_name(pm.process_handle, self.process_name)
-        # check_memory_protection=False: this game's code sections are
-        # PAGE_EXECUTE_WRITECOPY (likely from the mod-loader/anti-tamper
-        # wrapping - see project notes), which isn't in pymem's default
-        # allowed-protections list. With the default it silently skips the
-        # very pages containing our targets and returns None.
+        # check_memory_protection=False: this game's code sections are PAGE_EXECUTE_WRITECOPY
+        # (likely mod-loader/anti-tamper wrapping), not in pymem's default allowed-protections
+        # list - with the default it silently skips the pages containing our targets.
         match_addr = pymem.pattern.pattern_scan_module(
             pm.process_handle, module, pattern, check_memory_protection=False
         )
@@ -379,11 +386,15 @@ class NightreignMemoryReader:
         base = self._safe_read_qword(self._gameman_slot)
         return base or None  # null during scene transitions - not an error
 
-    def _read_player_data_base(self) -> Optional[int]:
+    def _read_gamedataman_base(self) -> Optional[int]:
         if not self.connected:
             return None
-        gamedataman_addr = self._safe_read_qword(self._gamedataman_slot)
-        if not gamedataman_addr:
+        base = self._safe_read_qword(self._gamedataman_slot)
+        return base or None  # null during scene transitions - not an error
+
+    def _read_player_data_base(self) -> Optional[int]:
+        gamedataman_addr = self._read_gamedataman_base()
+        if gamedataman_addr is None:
             return None
         player_data_base = self._safe_read_qword(gamedataman_addr + PLAYER_DATA_PTR_OFFSET)
         return player_data_base or None
@@ -424,6 +435,18 @@ class NightreignMemoryReader:
         if raw is None:
             return BossIdReading(raw=None, status="unreadable")
         return match_boss_id(raw)
+
+    def read_everdark_flag(self) -> Optional[bool]:
+        """True if the currently-loaded expedition's boss is the Everdark variant, False if
+        normal, None if unreadable (including from the pre-launch Target menu, before an
+        expedition is actually entered - same lifecycle as read_boss_id())."""
+        base = self._read_gamedataman_base()
+        if base is None:
+            return None
+        flag = self._safe_read_ubyte(base + EVERDARK_FLAG_OFFSET)
+        if flag is None:
+            return None
+        return bool(flag)
 
     def read_hub_state(self) -> Optional[bool]:
         """True if in hub/menu/loading, False if in an active run, None if unreadable."""
@@ -475,14 +498,15 @@ def _main():
         char_id = reader.read_character_class()
         char_name = CHARACTER_CLASS_NAMES.get(char_id, f"unknown({char_id})") if char_id is not None else None
         boss = reader.read_boss_id()
+        everdark = reader.read_everdark_flag()
         in_hub = reader.read_hub_state()
         pulse = reader.read_outcome_pulse()
 
-        current = (char_id, boss.raw, boss.status, in_hub, pulse)
+        current = (char_id, boss.raw, boss.status, everdark, in_hub, pulse)
         if current != last:
             boss_desc = boss.name or boss.message or boss.status
             print(
-                f"character={char_name}  boss_id={boss.raw} ({boss_desc})  "
+                f"character={char_name}  boss_id={boss.raw} ({boss_desc})  everdark={everdark}  "
                 f"in_hub={in_hub}  outcome_pulse={pulse}"
             )
             last = current

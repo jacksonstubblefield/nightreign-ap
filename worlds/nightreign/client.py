@@ -1,7 +1,12 @@
 """Archipelago client for Elden Ring Nightreign.
 
 Polls the running game via memory_reader.py and sends a location check on
-each detected Nightlord win. When the gate_boss_access option is on for this
+each detected Nightlord win. When enable_everdark_checks is on for this slot
+and the win is detected as an Everdark Sovereign variant (memory_reader.py's
+read_everdark_flag()), a separate "Defeat Everdark X" location is sent instead
+of the normal one - see Options.py's EnableEverdarkChecks for the disclaimer
+around Everdark availability being outside this project's control. When the
+gate_boss_access option is on for this
 slot (learned from slot_data on connect), received Access items are synced
 into the game via memory_writer.py's SetEventFlag port, gating which
 Nightlords are actually selectable. When randomize_weapons and/or
@@ -38,35 +43,28 @@ from CommonClient import (ClientCommandProcessor, CommonContext, get_base_parser
 from NetUtils import ClientStatus
 
 from .game_data import (ACCESS_ITEM_EVENT_FLAGS, ACCESS_NIGHTLORDS, EFFECT_CAP_MAP,
-                        TALISMAN_TABLE, WEAPON_ART_TABLE, WEAPON_TABLE, is_flying_animation,
-                        natural_weapon_tier, roll_effect_tier, roll_upgrade_tier,
-                        starting_free_nightlords)
+                        EVERDARK_NIGHTLORDS, TALISMAN_TABLE, WEAPON_ART_TABLE, WEAPON_TABLE,
+                        is_flying_animation, natural_weapon_tier, roll_effect_tier,
+                        roll_upgrade_tier, starting_free_nightlords)
 from .Items import lookup_id_to_name
-from .Locations import location_name, location_name_boss_only, location_name_to_id
+from .Locations import (location_name, location_name_boss_only, location_name_everdark,
+                        location_name_everdark_boss_only, location_name_to_id)
 from .memory_reader import NightreignMemoryReader, PointerNotFoundError
 from .memory_writer import NightreignItemDropWriter, NightreignMemoryWriter
 from .overlay import NightreignOverlay
 
 logger = logging.getLogger("NightreignClient")
 
-# Tight enough to reliably catch the transient +0xAF1 win pulse - see
+# Tight enough to reliably catch the win pulse - see
 # project notes on how narrow that window was observed to be.
 POLL_INTERVAL = 0.25
 RECONNECT_INTERVAL = 2
 BUILD_MISMATCH_BACKOFF = 30
 
-# The animation-based flying check (see game_data.py's FLYING_ANIMATION_RANGE) was only ever
-# RE'd from mid-run flight points, not the ~10s airdrop the character rides in on when first
-# entering an Expedition - live-confirmed that drop-in sequence uses a different, uncatalogued
-# animation id the check doesn't recognize as "flying", so a drop requested right as in_hub flips
-# False could land while the character was still mid-descent and get lost. This cooldown is a
-# blunt backstop on top of the existing animation check, not a replacement for it: no delivery is
-# attempted at all until this many seconds after in_hub is first observed False, comfortably
-# past the known ~10s airdrop with margin for the read/observation lag on top of it.
+# The fly-in animation
 EXPEDITION_ENTRY_SETTLE_SECONDS = 15
 
-# How long the overlay's "Weapon received"/"Talisman received" toast stays up after a successful
-# drop, before the overlay update loop clears it again - see _show_toast/poll_loop.
+# Item received toast duration
 TOAST_DURATION_SECONDS = 3.0
 
 
@@ -88,6 +86,8 @@ class NightreignCommandProcessor(ClientCommandProcessor):
 
 
 class NightreignContext(CommonContext):
+    """Full client context for nightreign
+    """
     game = "Elden Ring Nightreign"
     command_processor = NightreignCommandProcessor
     items_handling = 0b111
@@ -99,6 +99,7 @@ class NightreignContext(CommonContext):
     gate_boss_access: bool
     randomize_weapons: bool
     randomize_talismans: bool
+    enable_everdark_checks: bool
     freed_nightlords: set
     per_character_checks: bool
     goal: str
@@ -128,6 +129,7 @@ class NightreignContext(CommonContext):
         self.gate_boss_access = False
         self.randomize_weapons = False
         self.randomize_talismans = False
+        self.enable_everdark_checks = False
         self.freed_nightlords = set()
         self.per_character_checks = False
         self.goal = "all_bosses"
@@ -174,13 +176,12 @@ class NightreignContext(CommonContext):
             # it sets this itself here.
             self.slot_data = args.get("slot_data", {}) or {}
             self.gate_boss_access = bool(self.slot_data.get("gate_boss_access", False))
-            # slot_data keys are "receive_weapons"/"receive_talismans" - see Options.py's
-            # ReceiveWeapons/ReceiveTalismans and __init__.py's fill_slot_data(). Not
-            # "randomize_weapons"/"randomize_talismans" (this attribute's own name) - those keys
-            # never existed in slot_data, so this previously always fell back to False regardless
-            # of the player's actual YAML settings, silently disabling the whole feature.
+            # slot_data keys are "receive_weapons"/"receive_talismans" (see Options.py/__init__.py's
+            # fill_slot_data), not "randomize_weapons"/"randomize_talismans" - using the wrong keys
+            # previously fell back to False regardless of the player's actual YAML settings.
             self.randomize_weapons = bool(self.slot_data.get("receive_weapons", False))
             self.randomize_talismans = bool(self.slot_data.get("receive_talismans", False))
+            self.enable_everdark_checks = bool(self.slot_data.get("enable_everdark_checks", False))
             self.freed_nightlords = set(
                 starting_free_nightlords(self.slot_data.get("starting_boss", "Tricephalos"))
             )
@@ -191,28 +192,21 @@ class NightreignContext(CommonContext):
             self.goal_groups = self.slot_data.get("goal_groups") or []
             logger.info("gate_boss_access=%s for this slot.", self.gate_boss_access)
 
-            # A flag write only ever confirms that the remote thread was dispatched, not that the
-            # in-game effect actually landed (see memory_writer.py's set_event_flag docstring) - so
-            # treating a past dispatch as permanently done would mean a write that silently had no
-            # visible effect (e.g. fired too early in the hub-load sequence) could never be retried
-            # for the rest of the process's life. Clearing this on every fresh AP connection - not
-            # just on a game-process reconnect (see poll_loop) - turns "disconnect/reconnect the AP
-            # client" into an actual retry path instead of a no-op.
+            # A flag write only confirms dispatch, not that it landed in-game (see
+            # memory_writer.py's set_event_flag docstring), so clear this on every fresh AP
+            # connection - not just a game-process reconnect - to make reconnecting a retry path.
             self._synced_flags.clear()
 
             self._open_run_state()
-            # Replay anything our local state already thinks is checked, in
-            # case the server and our local record ever drifted (e.g. a
-            # connection dropped mid-send). check_locations() only sends
-            # what's still in ctx.missing_locations, so this is always safe.
+            # Replay anything our local state already thinks is checked, in case the server and
+            # our local record ever drifted (e.g. a connection dropped mid-send).
+            # check_locations() only sends what's still in ctx.missing_locations, so this is safe.
             if self.checked_location_ids:
                 asyncio.create_task(self.check_locations(self.checked_location_ids))
             asyncio.create_task(self._maybe_declare_goal())
-            # gate_boss_access is only known once this packet arrives, but the game
-            # process may already be attached from before this connect (its own
-            # connect-transition in poll_loop already ran with gate_boss_access still
-            # False at the time) - build the writer here too, or that ordering
-            # would leave it permanently unbuilt for the rest of the session.
+            # gate_boss_access is only known once this packet arrives, but the game process may
+            # already be attached from before this connect (poll_loop's own connect-transition ran
+            # with it still False) - build the writer here too, or it stays unbuilt all session.
             self._ensure_gating_ready()
             self._ensure_overlay_ready()
             asyncio.create_task(self._sync_event_flags())
@@ -224,26 +218,20 @@ class NightreignContext(CommonContext):
         if cmd == "ReceivedItems":
             if self.gate_boss_access:
                 asyncio.create_task(self._sync_event_flags())
-            # No action needed here for randomize_weapons/randomize_talismans -
-            # _pending_drop_keys() recomputes from self.items_received fresh every time
-            # poll_loop's hub-exit edge fires, so a newly received "Randomized Weapon"/
-            # "Randomized Talisman" is picked up automatically on the next Expedition entry
-            # without any bookkeeping needed at receive time.
+            # No action needed for randomize_weapons/randomize_talismans - _pending_drop_keys()
+            # recomputes from self.items_received on every poll_loop hub-exit edge, so a new
+            # "Randomized Weapon"/"Talisman" is picked up on the next Expedition entry automatically.
 
         if cmd == "RoomUpdate":
-            # ctx.missing_locations is updated (by the base on_package
-            # handling, before this hook runs) from the "checked_locations"
-            # field on this same packet - this is the correct place to
-            # notice "nothing left to check", not right after our own send,
-            # since the server confirms via this packet rather than synchronously.
+            # missing_locations is updated (by base on_package handling, before this hook runs)
+            # from this packet's "checked_locations" field, so this - not right after our own
+            # send - is the correct place to notice "nothing left to check".
             asyncio.create_task(self._maybe_declare_goal())
 
     def _goal_complete(self) -> bool:
-        # goal_groups (from slot_data, see World.create_regions()) is a list of groups, where
-        # each group is satisfied by ANY one of its location ids being checked - the overall
-        # goal needs EVERY group satisfied. Falls back to the pre-`goal`-option behavior ("no
-        # locations left to check at all") if slot_data has no goal_groups, e.g. stale slot_data
-        # from a seed generated before this existed.
+        # goal_groups (from slot_data) is a list of groups, each satisfied by ANY one of its
+        # location ids being checked; the goal needs EVERY group satisfied. Falls back to "no
+        # locations left to check" if slot_data has no goal_groups (e.g. a seed from before this).
         if not self.goal_groups:
             return not self.missing_locations
         return all(
@@ -252,31 +240,22 @@ class NightreignContext(CommonContext):
         )
 
     async def _maybe_declare_goal(self) -> None:
-        # This tracker has no item/logic gating (topology_present = False,
-        # every location is reachable from the start), so there's no
-        # CollectionState-based completion_condition that could mean
-        # anything here - "goal" can only be observed client-side, via
-        # _goal_complete(). See docs/adding games.md's "Hard Requirements":
-        # a client must send a StatusUpdate on goal completion.
+        # No item/logic gating here (topology_present = False), so there's no CollectionState
+        # completion_condition to rely on - "goal" can only be observed client-side via
+        # _goal_complete() (docs/adding games.md requires a StatusUpdate on goal completion).
         if not self.finished_game and self.slot is not None and self._goal_complete():
             self.finished_game = True
             await self.send_msgs([{"cmd": "StatusUpdate", "status": ClientStatus.CLIENT_GOAL}])
             logger.info("Goal '%s' complete!", self.goal)
 
     # --- Boss-access gating (write path) ---
-    #
-    # Off unless slot_data says gate_boss_access is on for this slot. Firing
-    # SetEventFlag(110) for any one of the 6 secondary-boss Access items
-    # necessarily reveals all 6 in the game's own menu (that flag is
-    # all-or-nothing - see game_data.py) - overlay.py is what shows the
-    # player which of those are actually AP-owned.
+    # Off unless slot_data's gate_boss_access is on. Firing SetEventFlag(110) for any one of the
+    # 6 secondary-boss Access items reveals all 6 in the game's own menu (all-or-nothing).
 
     def _owned_item_names(self) -> set:
-        # freed_nightlords (from the starting_boss option) are stitched in as
-        # synthetic "X Access" entries so every downstream consumer of this
-        # set - flag-firing and the overlay's locked/unlocked display - treats
-        # them exactly like an already-received Access item, with no separate
-        # code path needed.
+        # freed_nightlords (from starting_boss) are stitched in as synthetic "X Access" entries
+        # so every downstream consumer - flag-firing, overlay's locked/unlocked display - treats
+        # them exactly like an already-received Access item, with no separate code path needed.
         owned = {lookup_id_to_name.get(i.item) for i in self.items_received}
         owned |= {f"{name} Access" for name in self.freed_nightlords}
         return owned
@@ -362,15 +341,8 @@ class NightreignContext(CommonContext):
                     ptr_slot, base_a_addr)
 
     # --- Randomized item-drop write path (weapons and talismans) ---
-    #
-    # Off unless slot_data says randomize_weapons and/or randomize_talismans is on for this slot.
-    # A received "Randomized Weapon"/"Randomized Talisman" filler item is deterministically
-    # rolled into a real item (see _roll_weapon_drop/_roll_talisman_drop) and dropped on the
-    # ground as soon as poll_loop confirms both "in_hub is False" (in an Expedition) and "not
-    # is_flying_animation(...)" (grounded, not mid-flight) - not immediately on receipt, since
-    # there's no safe way to drop an item while in the hub/menu or mid-air. One item_drop_writer
-    # is shared by both - memory_writer.py's drop_item() is item-type agnostic (category comes
-    # from the item id itself), so there's no need for a second write path.
+    # Off unless randomize_weapons/randomize_talismans is on. A received item is rolled into a
+    # real item and dropped once poll_loop confirms in an Expedition and grounded (not mid-flight).
 
     def _ensure_item_drop_ready(self) -> None:
         """Same "build once both an option and the game connection are known" shape as
@@ -528,15 +500,8 @@ class NightreignContext(CommonContext):
         )
 
     # --- Per-run local state file ---
-    #
-    # One file per distinct AP world/slot (keyed by seed name + slot name),
-    # under Utils.user_path("nightreign"). Keeping this separate per seed
-    # means switching between different multiworld games never mixes up
-    # which locations have already been sent. Beyond that resume/dedupe
-    # role, it also keeps a timestamped event log of every win and every
-    # unresolved boss_id detection - a self-contained artifact a tester can
-    # hand to the mod owner alongside the "please report this" message from
-    # the Phase 0/1 design decision.
+    # One file per AP world/slot (keyed by seed + slot name), so switching multiworld games
+    # never mixes up which locations were sent. Also logs wins and unresolved boss_id detections.
 
     def _run_state_key(self) -> tuple[str, str]:
         seed_name = self.seed_name or "unknown_seed"
@@ -623,9 +588,8 @@ class NightreignContext(CommonContext):
             try:
                 if not self.reader.connected:
                     # A stale writer holds addresses from a now-dead process handle - don't let
-                    # the next _sync_event_flags() reuse it after a fresh connect rebuilds it.
-                    # Drop synced-flag bookkeeping too, so a fresh connect re-verifies rather than
-                    # trusting state from a writer that no longer exists.
+                    # _sync_event_flags() reuse it. Drop synced-flag bookkeeping too, so a fresh
+                    # connect re-verifies rather than trusting state from a writer that's gone.
                     self.writer = None
                     self._synced_flags.clear()
                     self.item_drop_writer = None
@@ -657,11 +621,9 @@ class NightreignContext(CommonContext):
                     self._last_pulse = pulse
 
                 if self.gate_boss_access and self.writer is not None:
-                    # Retried every tick, not just on Connected/ReceivedItems: freed_nightlords
-                    # (from the starting_boss option) never arrives as a ReceivedItems packet, so
-                    # this is the only thing that retries a flag write that failed because the
-                    # EventFlag pointer was transiently unreadable (e.g. still mid-tutorial
-                    # transition) right when the writer was first built. A no-op once synced.
+                    # Retried every tick, not just on Connected/ReceivedItems: freed_nightlords never
+                    # arrives as a ReceivedItems packet, so this is the only retry path for a flag
+                    # write that failed from a transiently-unreadable pointer. A no-op once synced.
                     await self._sync_event_flags()
 
                 # Read once per tick and shared below - True in hub/menu/loading, False in an
@@ -684,12 +646,9 @@ class NightreignContext(CommonContext):
                             self._warn_if_boss_locked(boss.name)
 
                 if self.randomize_weapons or self.randomize_talismans:
-                    # Tracks how long we've continuously seen in_hub is False, so the settle-time
-                    # check below can tell "just exited the hub" apart from "been in the
-                    # Expedition a while" - reset on True so re-entering a fresh Expedition later
-                    # gets its own full settle window rather than reusing an old timestamp. Left
-                    # untouched while in_hub is None (transiently unreadable), same conservative
-                    # handling as _locked_boss_warned's re-arm logic above.
+                    # Tracks how long in_hub has continuously been False, so the settle-time check
+                    # below can tell "just exited the hub" from "been in the Expedition a while" -
+                    # reset on True so each fresh Expedition gets its own settle window.
                     if in_hub:
                         self._hub_exit_time = None
                     elif in_hub is False and self._hub_exit_time is None:
@@ -701,16 +660,9 @@ class NightreignContext(CommonContext):
                     and self._hub_exit_time is not None
                     and time.monotonic() - self._hub_exit_time >= EXPEDITION_ENTRY_SETTLE_SECONDS
                 ):
-                    # Level-triggered on every tick, not edge-triggered on hub-exit: a pending drop
-                    # needs BOTH "confirmed in an Expedition" and "confirmed not mid-flight" to
-                    # actually land (live-tested - see game_data.py's WORLDCHRMAN_AOB/
-                    # is_flying_animation comments) - the player can still be mid-air from a
-                    # mid-run flight point at the exact tick this fires, hence the animation check
-                    # below too, on top of the EXPEDITION_ENTRY_SETTLE_SECONDS backstop for the
-                    # airdrop specifically (see that constant's comment). Retrying every tick while
-                    # a drop is still pending is safe: _delivered_weapon_keys/_delivered_talisman_keys
-                    # already prevent re-sending once a drop succeeds (see
-                    # _pending_drop_keys/_deliver_pending_drops).
+                    # Level-triggered every tick, not edge-triggered on hub-exit: a pending drop needs
+                    # both "in an Expedition" and "not mid-flight" (live-tested, see game_data.py) to
+                    # land. Safe to retry: _delivered_weapon_keys/_delivered_talisman_keys dedupe.
                     animation = (
                         self.reader.read_current_animation(self._worldchrman_slot)
                         if self._worldchrman_slot is not None else None
@@ -731,19 +683,17 @@ class NightreignContext(CommonContext):
                         locked_names = []
 
                     # Boss/character debug panel - always updated regardless of gate_boss_access,
-                    # since win detection matters for every player, not just those using boss
-                    # gating (see _ensure_overlay_ready). Read every tick, in both the hub and an
-                    # Expedition - not just the latter - since a character-recognition bug tied to
-                    # cosmetic skins needs comparing readings on both sides of that boundary.
+                    # since win detection matters for every player. Read every tick in both the hub
+                    # and an Expedition, to compare readings across that boundary (skin bugs).
                     debug_boss = self.reader.read_boss_id()
                     boss_raw = debug_boss.raw
                     boss_desc = debug_boss.name or debug_boss.message or debug_boss.status
                     character = self.reader.read_character_class_name()
+                    everdark = self.reader.read_everdark_flag()
 
-                    # Center-top "Weapon received"/"Talisman received" toast - _show_toast() (in
-                    # _deliver_pending_drops) set the expiry once, at the moment of a successful
-                    # drop; every tick until that expiry passes re-sends the same text so the Tk
-                    # thread keeps showing it, and once it's passed this clears it back to None.
+                    # Center-top "Weapon/Talisman received" toast - _show_toast() sets the expiry once
+                    # on a successful drop; every tick until it passes re-sends the same text so the
+                    # Tk thread keeps showing it, and once passed this clears it back to None.
                     toast_text = None
                     if self._toast_expiry is not None:
                         if time.monotonic() < self._toast_expiry:
@@ -752,22 +702,17 @@ class NightreignContext(CommonContext):
                             self._toast_text = None
                             self._toast_expiry = None
 
-                    # pid is refreshed here too, not just at overlay construction - the game
-                    # process can restart mid-session and reconnect under a new pid, but this
-                    # already-running overlay is never torn down/rebuilt for that (see the
-                    # `self.overlay is None` guard in _ensure_overlay_ready), so without this it
-                    # would keep hunting for a dead process's window and stay invisible forever.
+                    # pid is refreshed here too, not just at overlay construction - the game process
+                    # can restart under a new pid without the overlay being torn down/rebuilt
+                    # (see the `self.overlay is None` guard), or it'd hunt a dead process forever.
                     self.overlay.state.update(
                         bool(in_hub), locked_names, self.reader.pm.process_id,
-                        boss_raw, boss_desc, character, toast_text,
+                        boss_raw, boss_desc, character, everdark, toast_text,
                     )
 
-                    # Logged only on change, not every tick - lets a log dump explain exactly
-                    # why the locked-boss panel was/wasn't visible at any point (it only draws
-                    # while in_hub and locked_names is non-empty - see overlay.py's _tick),
-                    # without spamming a line 4x/second. The boss/character debug panel isn't
-                    # included here since boss_id/character are expected to hold steady for a
-                    # whole run.
+                    # Logged only on change, not every tick, so a log dump explains why the
+                    # locked-boss panel was/wasn't visible without spamming 4x/second. The
+                    # boss/character panel isn't included - those are expected to hold steady.
                     state_key = (bool(in_hub), tuple(locked_names))
                     if state_key != self._last_overlay_state:
                         self._last_overlay_state = state_key
@@ -802,8 +747,25 @@ class NightreignContext(CommonContext):
             })
             return
 
-        name = (location_name(character_name, boss.name) if self.per_character_checks
-                else location_name_boss_only(boss.name))
+        everdark = bool(self.reader.read_everdark_flag())  # None (unreadable) treated as False
+
+        if everdark and self.enable_everdark_checks and boss.name in EVERDARK_NIGHTLORDS:
+            name = (location_name_everdark(character_name, boss.name) if self.per_character_checks
+                    else location_name_everdark_boss_only(boss.name))
+        elif everdark:
+            # An Everdark win, but this slot either doesn't have enable_everdark_checks on, or
+            # this Nightlord has no Everdark form (shouldn't happen - Night Aspect is the only
+            # one, and it isn't fought via a normal win pulse the same way). Deliberately not
+            # falling back to crediting the normal "Defeat X" location instead - that would
+            # reward a harder fight with a check that doesn't reflect what actually happened.
+            logger.info(
+                "Win detected as Everdark %s, but Everdark checks aren't enabled for this slot "
+                "(or this Nightlord has no Everdark form) - not sending.", boss.name,
+            )
+            return
+        else:
+            name = (location_name(character_name, boss.name) if self.per_character_checks
+                    else location_name_boss_only(boss.name))
         location_id = location_name_to_id.get(name)
         if location_id is None:
             # Not in this player's included_characters/included_nightlords - nothing to send.
@@ -818,6 +780,7 @@ class NightreignContext(CommonContext):
         self._append_event({
             "timestamp": timestamp,
             "type": "win",
+            "everdark": everdark,
             "character": character_name,
             "raw_boss_id": boss.raw,
             "matched": boss.name,

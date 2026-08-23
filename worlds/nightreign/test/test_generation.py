@@ -13,7 +13,7 @@ branches on.
 
 from Options import OptionError
 from test.bases import WorldTestBase
-from worlds.nightreign.game_data import CHARACTERS, NIGHTLORDS
+from worlds.nightreign.game_data import CHARACTERS, EVERDARK_NIGHTLORDS, NIGHTLORDS
 
 
 class NightreignGateOffTest(WorldTestBase):
@@ -66,6 +66,61 @@ class NightreignGateBossAndCharacterTest(WorldTestBase):
     options = {"gate_boss_access": True, "bosses_with_characters": "boss_and_character"}
 
 
+# --- `enable_everdark_checks` option coverage ---
+# Everdark locations get the same access_rule gating as normal ones (see create_regions()), so
+# test_fill (via WorldTestBase's default auto_construct) already re-exercises the softlock
+# invariant this file exists for, now with Everdark locations mixed in - including combined with
+# gate_boss_access, the exact combination that produced the original bug.
+
+class NightreignEverdarkBossTest(WorldTestBase):
+    game = "Elden Ring Nightreign"
+    options = {"enable_everdark_checks": True}
+
+    def test_adds_one_everdark_location_per_everdark_nightlord(self) -> None:
+        locations = self.multiworld.get_locations(self.world.player)
+        everdark_names = [loc.name for loc in locations if loc.name.startswith("Defeat Everdark ")]
+        self.assertEqual(len(everdark_names), len(EVERDARK_NIGHTLORDS))
+        self.assertNotIn("Defeat Everdark Night Aspect", everdark_names)
+
+
+class NightreignEverdarkBossAndCharacterTest(WorldTestBase):
+    game = "Elden Ring Nightreign"
+    options = {"enable_everdark_checks": True, "bosses_with_characters": "boss_and_character"}
+
+    def test_everdark_locations_mirror_bosses_with_characters(self) -> None:
+        locations = self.multiworld.get_locations(self.world.player)
+        everdark_names = [loc.name for loc in locations if loc.name.startswith("Defeat Everdark ")]
+        self.assertEqual(len(everdark_names), len(CHARACTERS) * len(EVERDARK_NIGHTLORDS))
+
+
+class NightreignEverdarkWithGateTest(WorldTestBase):
+    game = "Elden Ring Nightreign"
+    options = {
+        "enable_everdark_checks": True,
+        "gate_boss_access": True,
+        "bosses_with_characters": "boss_and_character",
+        "starting_boss": "fissure_in_the_fog",  # the exact starting_boss the original softlock used
+    }
+    # No dedicated test method needed - WorldTestBase's default test_fill (run via auto_construct)
+    # already reruns real distribute_items_restrictive and asserts nothing is unreachable, which is
+    # exactly what would catch an Everdark access_rule mistake reintroducing the original softlock.
+
+
+class NightreignEverdarkNotInGoalGroupsTest(WorldTestBase):
+    game = "Elden Ring Nightreign"
+    options = {
+        "enable_everdark_checks": True,
+        "bosses_with_characters": "boss_and_character",
+        "goal": "all_bosses",
+    }
+
+    def test_goal_groups_ignores_everdark_locations(self) -> None:
+        # all_bosses' goal_groups is one singleton per active location - if Everdark locations
+        # leaked in, this count would include them too, and some seeds could become unwinnable
+        # since Everdark availability isn't guaranteed (see Options.py's disclaimer).
+        self.assertEqual(len(self.world.goal_groups), len(CHARACTERS) * len(NIGHTLORDS))
+
+
 class NightreignNoFillerSourceTest(WorldTestBase):
     game = "Elden Ring Nightreign"
     auto_construct = False
@@ -80,11 +135,8 @@ class NightreignNoFillerSourceTest(WorldTestBase):
 
 
 # --- `goal` option coverage ---
-#
-# World.create_regions() builds self.goal_groups (a list of groups, each satisfied by ANY one
-# of its location ids being checked, with the overall goal requiring EVERY group satisfied -
-# see client.py's _goal_complete for the client-side half of this). These tests check that
-# structure directly rather than the fill/reachability invariant test_fill covers above.
+# World.create_regions() builds self.goal_groups (see client.py's _goal_complete). These tests
+# check that structure directly, not the fill/reachability invariant test_fill covers above.
 
 class NightreignGoalRandomWrongGranularityTest(WorldTestBase):
     game = "Elden Ring Nightreign"

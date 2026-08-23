@@ -33,9 +33,8 @@ KNOWN_BOSS_IDS = {
 # Checks Nightlord ID +/- 3 given variance seen in testing
 DRIFT_TOLERANCE = 3
 
-# +0xB50 (like its neighbors +0xB48/+0xB4C) reads this sentinel when no boss
-# is selected (hub/menu). With DRIFT_TOLERANCE=3 this sits right inside
-# Tricephalos's (id=2) match window, so it must be checked before
+# +0xB50 reads this sentinel when no boss is selected (hub/menu). With DRIFT_TOLERANCE=3 this
+# sits right inside Tricephalos's (id=2) match window, so it must be checked before
 # tolerance-matching rather than left to fall through - see memory_reader.py.
 UNSET_SENTINEL = -1
 
@@ -55,6 +54,10 @@ NIGHTLORDS = nightlord_roster()
 
 # Nightlords that do not start unlocked (minus DLC)
 ACCESS_NIGHTLORDS = list(NIGHTLORDS)
+
+# Nightlords with an Everdark Sovereign variant - all of them except Night Aspect, the campaign
+# finale, which has no Everdark form. See memory_reader.py's read_everdark_flag() for detection.
+EVERDARK_NIGHTLORDS = [name for name in NIGHTLORDS if name != "Night Aspect"]
 
 # Known event flags that unlock bosses
 EVENT_FLAG_SECONDARY_BOSSES = 110
@@ -76,19 +79,12 @@ def starting_free_nightlords(starting_boss: str) -> list:
 
 
 # --- Item-drop write path (filler weapons) ---
-#
-# AOBs below are a Python port of the "Sly - ItemDrop" Cheat Engine script (community table
-# `Nightreign_w_apvalues.CT`, contributor Volkov_ilya37) - see memory_writer.py's
-# NightreignItemDropWriter for how these are actually dispatched. Same non-connect()-time
-# resolution convention as EVENTFLAG_PTR_AOB/EVENTFLAG_BASE_A_AOB: only resolved when a caller
-# actually wants write access, so a patch that breaks only these AOBs can't take down the
-# read-only tracker.
+# AOBs below are a Python port of the "Sly - ItemDrop" Cheat Engine script - see
+# memory_writer.py's NightreignItemDropWriter. Resolved lazily, not in connect().
 
-# Pointer-slot style (like GAMEMAN_AOB/GAMEDATAMAN_AOB in memory_reader.py), but the actual
-# `mov reg,[rip+disp32]` instruction isn't inside the matched bytes - it starts
-# MAPITEMMAN_AOB_OFFSET bytes past the match, per the CT table's own registerBaseAddr() Lua
-# resolver (offset applied before the same len=7/ripOffset=3 RIP-relative math
-# _resolve_pointer_slot already does for the other two pointer slots).
+# Pointer-slot style (like GAMEMAN_AOB/GAMEDATAMAN_AOB), but the `mov reg,[rip+disp32]` instruction
+# isn't inside the matched bytes - it starts MAPITEMMAN_AOB_OFFSET bytes past the match, per the
+# CT table's own registerBaseAddr() Lua resolver, before _resolve_pointer_slot's usual RIP math.
 MAPITEMMAN_AOB = "48 8B C8 E8 ?? ?? ?? ?? 0F 28 00 66 0F 7F 44 24 50"
 MAPITEMMAN_AOB_OFFSET = 0x11
 
@@ -98,9 +94,8 @@ ITEMDROP_CALL_AOB = "41 0F B6 E9 41 0F B6 F8 48 8B DA 48 8B F1 33 C0 48 89 44 24
 ITEMDROP_CALL_FUNC_OFFSET = -0x27  # real drop-function entry = match_addr + this
 
 # Used directly (no offset) as the base for a further "+0xD" applied inline by the trampoline
-# itself (see memory_writer.py) - the CT script reads a TLS index embedded as data at that fixed
-# byte offset inside the game's own code, mirroring how the compiler itself would resolve a
-# thread-local variable.
+# (see memory_writer.py) - the CT script reads a TLS index embedded as data at that fixed byte
+# offset, mirroring how the compiler itself would resolve a thread-local variable.
 TLS_SLOT_FETCHER_ITEMDROP_AOB = "8D 41 0F 03 C2 83 E0 F0 41 89 00 8B 0D"
 
 # The weapon-tier lookup helper ("Aboba" in the CT script's own Lua - an arbitrary name the CT
@@ -116,21 +111,13 @@ ABOBA_FUNC_OFFSET = -0x7A
 TLS_FAKE_CONTEXT_RVA = 0x3C1F918
 
 # --- Current Animation read path (flight gating for the item-drop write path) ---
-#
-# WorldChrMan pointer-slot AOB, from the user's CE table - same `mov reg,[rip+disp32]` pointer-slot
-# shape as GAMEMAN_AOB/GAMEDATAMAN_AOB in memory_reader.py. WorldChrMan's own live object address
-# was confirmed live to change across scene transitions (hub<->Expedition), unlike GameMan/
-# GameDataMan's - so callers must re-walk the whole chain from this slot on every read rather than
-# caching any intermediate pointer (see memory_reader.py's read_current_animation()).
+# WorldChrMan pointer-slot AOB, same shape as GAMEMAN_AOB/GAMEDATAMAN_AOB. Unlike those, its live
+# object address changes across scenes, so callers must re-walk the chain on every read.
 WORLDCHRMAN_AOB = "48 8B 05 ?? ?? ?? ?? 0F 28 F1 48 85 C0"
 
 # [[[WorldChrMan+0x174E8]+0x1B8]+0x80]+0x98 is the local player's live "Current Animation" int -
-# live-tested against the running game across two sessions (single flight, then 3 flight-point
-# trips + jumps + combat) and found to fall into four cleanly-separated-by-magnitude bands:
-# ~2,000,000-2,999,999 (grounded movement - run/roll/sprint), ~20,000-29,999 (intro/hub/cutscene
-# animations), ~60,000-69,999 (flying), and 8-9-digit values (attacks). Used to gate the
-# randomized item-drop write path (see client.py) - the drop function needs the player to be both
-# in an Expedition and grounded, not mid-flight, to actually land a visible item.
+# live-tested into four magnitude bands: ~2,000,000s (grounded), ~20,000s (hub/cutscene),
+# ~60,000s (flying), 8-9 digits (attacks). Gates the item-drop write path (see client.py).
 WORLDCHRMAN_ANIM_OFFSETS = (0x174E8, 0x1B8, 0x80)
 WORLDCHRMAN_ANIM_FINAL_OFFSET = 0x98
 
@@ -185,10 +172,8 @@ EFFECT_CAP_MAP = {
 }
 
 # Upgrade-tier roll weighting for "Randomized Weapon" filler drops (see client.py's
-# _roll_weapon_drop): a uniform 0-100 percentile roll lands in one of these bands. Matches the
-# CT table's own Injector_WeaponTier naming (0=Default, 1=Blue, 2=Purple, 3=Orange) - the actual
-# upgrade_level handed to a drop still gets clamped down further by that specific weapon's own
-# max reinforcement tier (memory_writer.py's _clamp_upgrade_tier), same as every other drop.
+# _roll_weapon_drop): a 0-100 percentile roll lands in one of these bands, matching the CT
+# table's Injector_WeaponTier naming (0=Default, 1=Blue, 2=Purple, 3=Orange).
 UPGRADE_TIER_ROLL_BANDS = [
     (0, 45, 0),
     (46, 69, 1),
@@ -196,10 +181,9 @@ UPGRADE_TIER_ROLL_BANDS = [
     (90, 100, 3),
 ]
 
-# effect_tier roll weighting for "Randomized Weapon" filler drops - same percentile-band idea as
-# UPGRADE_TIER_ROLL_BANDS, just 3 bands (0/1/2) instead of 4, matching effect_tier's own range.
-# The requested tier still gets clamped down further by the specific affinity/gem rolled (see
-# EFFECT_CAP_MAP), same as every other drop - this only weights what gets *requested*.
+# effect_tier roll weighting for "Randomized Weapon" filler drops - same idea as
+# UPGRADE_TIER_ROLL_BANDS, just 3 bands (0/1/2) instead of 4. Still gets clamped down further
+# by the specific affinity/gem rolled (see EFFECT_CAP_MAP) - this only weights the request.
 EFFECT_TIER_ROLL_BANDS = [
     (0, 49, 0),
     (50, 84, 1),
@@ -223,20 +207,9 @@ def roll_effect_tier(percentile: int) -> int:
     """Maps a 0-100 percentile roll to an effect_tier (0-2) via EFFECT_TIER_ROLL_BANDS."""
     return _roll_from_bands(percentile, EFFECT_TIER_ROLL_BANDS)
 
-# Every id in WEAPON_TABLE was assumed by UPGRADE_TIER_ROLL_BANDS/_clamp_upgrade_tier to be that
-# weapon's tier-0 ("Default") form, so a rolled upgrade_level could just be added straight to the
-# id - true for most entries, but wrong for any weapon whose only obtainable id is already a
-# higher tier (live-confirmed in-game: "Ant's Skull Plate" drops naturally Purple, so requesting
-# upgrade_level=1 on top of it produced Orange instead of staying Purple). Extracted 2026-08-18 by
-# color-coding every weapon/shield name on the Nightreign Fextralife wiki
-# (eldenringnightreign.wiki.fextralife.com/Weapons and /Shields - name text is styled
-# white/blue/purple/gold per its natural tier) and matching names 1:1 against WEAPON_TABLE - all
-# 385 entries matched (three by hand: two known typos already flagged on WEAPON_TABLE itself,
-# "Great Épée" needing accent-insensitive matching, plus "Veteran's Prosthesis"/"Staff of the
-# Avatar" whose wiki markup nests the name a level deeper than every other entry - confirmed
-# directly from the raw page HTML rather than guessed). client.py's _roll_weapon_drop uses this to
-# request only the *extra* tiers needed above a weapon's own natural floor, instead of blindly
-# stacking upgrade_level on top of an id that may already be partway up the scale.
+# Every id in WEAPON_TABLE was assumed to be that weapon's tier-0 form, so a rolled upgrade_level
+# could just be added to the id - wrong for weapons whose only obtainable id is already higher
+# (e.g. "Ant's Skull Plate" drops naturally Purple). Lets _roll_weapon_drop request only the extra.
 WEAPON_NATURAL_TIER_LEVELS = {
     0: [
         0x00F4240, 0x00F9060, 0x010A1D0, 0x01E8480, 0x01EAB90, 0x01ED2A0, 0x01F47D0, 0x02206F0,
@@ -311,14 +284,9 @@ def natural_weapon_tier(item_id: int) -> int:
     far more likely to be a wiki-matching gap than a real elevated-tier weapon)."""
     return WEAPON_NATURAL_TIER.get(item_id, 0)
 
-# Weapon item id -> display name. Extracted mechanically (see the dev notes for this feature)
-# from the same CT table's `WeaponIDList[]` C array - 385 unique ids after de-duplicating 5
-# entries the CT table itself listed twice (a "Nightreign relic weapons" section at the top of
-# its source duplicates a handful of vanilla weapons already covered further down; kept the
-# properly-cased name on conflict). Two known typos survive from the source data unedited
-# ("Wylder's Gretsword", "Guardian's Halbert") - flagged here rather than silently fixed, since
-# there's no way to tell from this file alone whether that's a source typo or a real in-game
-# string.
+# Weapon item id -> display name. Extracted from the CT table's `WeaponIDList[]` C array -
+# 385 unique ids after de-duplicating 5 entries the CT table itself listed twice. Two known
+# typos survive unedited ("Wylder's Gretsword", "Guardian's Halbert") - flagged, not silently fixed.
 WEAPON_TABLE = {
     0x00F4240: "Dagger",
     0x00F6950: "Black Knife",
@@ -707,17 +675,13 @@ WEAPON_TABLE = {
     0x29F8A10: "Jar Cannon",
 }
 
-# Ash of War id -> display name, same source/extraction as WEAPON_TABLE. Per the research pass
-# that pulled this out of the CT file: this covers every generic, weapon-swappable Ash of War,
-# but not the unique arts innately bound to specific legendary weapons (e.g. Moonveil's,
-# Rivers of Blood's) - those apply automatically with the weapon itself and were never meant to
-# be independently selectable, so their absence here is expected, not a gap.
-# Talisman item id -> display name. Extracted from the same CT table's "Injector_Talismans"
-# DropDownList (a curated CE-UI dropdown, unlike WEAPON_TABLE's raw WeaponIDList[] C array) -
-# 67 entries, with the list's own "FFFFFFFF:None" sentinel entry dropped since it isn't a real
-# item. Base talisman ids only (a handful of talismans also have separate +1/+2 upgrade-variant
-# ids elsewhere in the CT file, e.g. Dragoncrest Shield Talisman - deliberately left out here,
-# same "no upgrade tier" scope as this whole feature, unlike randomized weapons).
+# Ash of War id -> display name, same source/extraction as WEAPON_TABLE. Covers every generic,
+# weapon-swappable Ash of War, not unique arts bound to specific legendary weapons (e.g.
+# Moonveil's) - those apply automatically with the weapon and were never independently selectable.
+
+# Talisman item id -> display name. Extracted from the CT table's "Injector_Talismans" DropDownList
+# (67 entries, "FFFFFFFF:None" sentinel dropped). Base talisman ids only - upgrade-variant ids
+# (e.g. Dragoncrest Shield Talisman +1/+2) are deliberately left out, same scope as weapons.
 TALISMAN_TABLE = {
     0x200003E8: "Crimson Amber Medallion",
     0x200003F2: "Cerulean Amber Medallion",

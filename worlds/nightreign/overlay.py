@@ -101,10 +101,11 @@ class OverlayState:
     every tick, the same way visible/locked_names already are, means the overlay keeps following
     whatever process is actually live instead of silently hunting for a dead one forever.
 
-    Also carries the boss/character debug reads (boss_raw/boss_desc/character) for the second
-    panel - shown in both the hub and an Expedition, see the module docstring - and toast_text for
-    the independent item-drop toast (None when there's nothing to show; client.py owns the ~3
-    second timing and just stops passing text once it's expired, see poll_loop/_show_toast)."""
+    Also carries the boss/character debug reads (boss_raw/boss_desc/character/everdark) for the
+    second panel - shown in both the hub and an Expedition, see the module docstring - and
+    toast_text for the independent item-drop toast (None when there's nothing to show; client.py
+    owns the ~3 second timing and just stops passing text once it's expired, see
+    poll_loop/_show_toast)."""
 
     def __init__(self, pid: int):
         self._lock = threading.Lock()
@@ -114,6 +115,7 @@ class OverlayState:
         self._boss_raw: Optional[int] = None
         self._boss_desc: Optional[str] = None
         self._character: Optional[str] = None
+        self._everdark: Optional[bool] = None
         self._toast_text: Optional[str] = None
 
     def update(
@@ -124,6 +126,7 @@ class OverlayState:
         boss_raw: Optional[int],
         boss_desc: Optional[str],
         character: Optional[str],
+        everdark: Optional[bool],
         toast_text: Optional[str],
     ) -> None:
         with self._lock:
@@ -133,11 +136,13 @@ class OverlayState:
             self._boss_raw = boss_raw
             self._boss_desc = boss_desc
             self._character = character
+            self._everdark = everdark
             self._toast_text = toast_text
 
     def snapshot(
         self,
-    ) -> tuple[bool, list[str], int, Optional[int], Optional[str], Optional[str], Optional[str]]:
+    ) -> tuple[bool, list[str], int, Optional[int], Optional[str], Optional[str], Optional[bool],
+               Optional[str]]:
         with self._lock:
             return (
                 self._visible,
@@ -146,6 +151,7 @@ class OverlayState:
                 self._boss_raw,
                 self._boss_desc,
                 self._character,
+                self._everdark,
                 self._toast_text,
             )
 
@@ -251,28 +257,31 @@ class NightreignOverlay:
         hwnd = root.winfo_id()
         ex_style = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
         user32.SetWindowLongW(hwnd, GWL_EXSTYLE, ex_style | WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW)
-        # Changing the ex-style on an already-layered window resets the color-key transparency
-        # tkinter's own -transparentcolor set up (a Windows quirk - restyling a layered window
-        # invalidates its previous SetLayeredWindowAttributes call) - reapply it here, or the
-        # window renders as a solid opaque block instead of chroma-keyed transparent.
+        # Changing the ex-style on an already-layered window resets tkinter's color-key
+        # transparency (restyling invalidates the previous SetLayeredWindowAttributes call) -
+        # reapply it here, or the window renders as opaque instead of chroma-keyed.
         user32.SetLayeredWindowAttributes(hwnd, _colorref(self._BG), 0, LWA_COLORKEY)
 
     @staticmethod
-    def _debug_text(boss_raw: Optional[int], boss_desc: Optional[str], character: Optional[str]) -> str:
+    def _debug_text(
+        boss_raw: Optional[int], boss_desc: Optional[str], character: Optional[str],
+        everdark: Optional[bool],
+    ) -> str:
+        everdark_text = "unset" if everdark is None else ("yes" if everdark else "no")
         return (
             f"boss_id: {boss_raw if boss_raw is not None else 'unset'}\n"
             f"boss: {boss_desc or 'unknown'}\n"
+            f"everdark: {everdark_text}\n"
             f"character: {character or 'unknown'}"
         )
 
     def _tick(self, label: tk.Label, debug_label: tk.Label, toast_label: tk.Label) -> None:
-        (visible, locked_names, pid, boss_raw, boss_desc, character,
+        (visible, locked_names, pid, boss_raw, boss_desc, character, everdark,
          toast_text) = self.state.snapshot()
         game_hwnd = _find_window_for_pid(pid)
-        # WS_EX_TOPMOST floats above every other window system-wide, not just the game - without
-        # this check the panel would sit on top of the desktop, browser, IDE, etc. whenever
-        # visible=True, not just the game. Only actually show it while the game is the foreground
-        # (focused) window, the same way overlays like Discord's/Steam's scope themselves.
+        # WS_EX_TOPMOST floats above every window system-wide, not just the game - without this
+        # check the panel would sit on top of the desktop, browser, IDE, etc. Only show it while
+        # the game is the foreground window, same as Discord's/Steam's overlays.
         is_game_foreground = game_hwnd is not None and user32.GetForegroundWindow() == game_hwnd
 
         show_locked = visible and locked_names and is_game_foreground
@@ -290,7 +299,7 @@ class NightreignOverlay:
 
         if show_debug:
             self._debug_root.deiconify()
-            debug_label.configure(text=self._debug_text(boss_raw, boss_desc, character))
+            debug_label.configure(text=self._debug_text(boss_raw, boss_desc, character, everdark))
             self._reposition(
                 self._debug_root, game_hwnd, self._PANEL_WIDTH, self._PANEL_HEIGHT, corner="bottom-right"
             )
@@ -313,10 +322,8 @@ class NightreignOverlay:
             return
         left, top, width, height = client_rect
         # Anchored to a fixed corner (or top-center, for the toast) of the game window with a
-        # fixed inset - v1 doesn't track the native Expeditions list's own position (that's the
-        # deferred row-masking stretch goal). Right-hand corners read less jarring than left,
-        # which tends to sit over other UI. Every panel is a fixed size (see the module
-        # docstring) - this only ever moves a window, never resizes one.
+        # fixed inset - v1 doesn't track the native Expeditions list's own position. Every panel
+        # is a fixed size (see module docstring); this only ever moves a window, never resizes one.
         inset = NightreignOverlay._INSET
         if corner == "top-right":
             x, y = left + width - panel_width - inset, top + inset

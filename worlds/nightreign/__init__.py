@@ -22,7 +22,7 @@ def launch_client():
 
 
 components.append(Component("Nightreign Client", func=launch_client, component_type=Type.CLIENT, icon="nightreign"))
-icon_paths["nightreign"] = f"ap:{__name__}/data/icon.png"
+icon_paths["nightreign"] = f"ap:{__name__}/data/image.png"
 
 
 class NightreignWeb(WebWorld):

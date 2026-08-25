@@ -2,7 +2,7 @@ from typing import NamedTuple
 
 from BaseClasses import Item, ItemClassification
 
-from .game_data import ACCESS_NIGHTLORDS, NIGHTLORDS
+from .game_data import ACCESS_CHARACTERS, ACCESS_NIGHTLORDS, NIGHTLORDS
 
 
 class NightreignItem(Item):
@@ -39,6 +39,15 @@ item_table = {
     "Randomized Weapon": ItemData(BASE_ID + len(NIGHTLORDS) + len(ACCESS_NIGHTLORDS)),
     # Same shape as "Randomized Weapon" above, gated by the randomize_talismans option instead.
     "Randomized Talisman": ItemData(BASE_ID + len(NIGHTLORDS) + len(ACCESS_NIGHTLORDS) + 1),
+} | {
+    # One progression "Character Access" item per playable character (see ACCESS_CHARACTERS) -
+    # same shape as the Nightlord Access items above, distinctly named so the two never collide.
+    # Appended after everything above (ids continue sequentially) to avoid disturbing any existing
+    # seed's item ids.
+    f"{name} Character Access": ItemData(
+        BASE_ID + len(NIGHTLORDS) + len(ACCESS_NIGHTLORDS) + 2 + i, ItemClassification.progression
+    )
+    for i, name in enumerate(ACCESS_CHARACTERS)
 }
 
 # get_filler_item_name() must only ever choose from FILLER_ITEM_NAMES, not item_table's full key

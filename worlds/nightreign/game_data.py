@@ -2,7 +2,6 @@
 """
 
 # Character class ID
-# Unlockable characters still need to be unlocked in-game traditionally
 CHARACTER_CLASS_NAMES = {
     50000: "Wylder",
     50100: "Guardian",
@@ -76,6 +75,46 @@ def starting_free_nightlords(starting_boss: str) -> list:
     """List of Nightlords that start unlocked for a given starting boss.
     """
     return [starting_boss]
+
+
+# Event flags that unlock playable characters - individually addressable, unlike the batched
+# secondary-boss flags above. Live-verified 2026-08-25 against a running offline save: fired each
+# flag in turn and confirmed via the game's own character-select screen (Scholar's unlock even
+# produced a native "New Character" popup). Directly confirmed: 6031->Duchess, 6037->Revenant,
+# 6038->Scholar, 6039->Undertaker; the remaining 6 were already unlocked on the test save, so they
+# follow the confirmed sequential pattern by inference rather than direct observation. That pattern
+# matches the codename ordering (Tracker/Lady/Destroyer/Enforcer/Wise/Iron Eye/Guardian/Avenger)
+# from https://soulsmodding.com/doku.php?id=nr-refmat:event-flag-list - this resolves the earlier
+# disagreement with the CE table's partial/bundled reading (6037/6038/6039) in favor of the
+# soulsmodding source's full 6030-6037 sequential range.
+CHARACTER_EVENT_FLAGS = {
+    "Wylder": 6030,
+    "Duchess": 6031,
+    "Raider": 6032,
+    "Executor": 6033,
+    "Recluse": 6034,
+    "Ironeye": 6035,
+    "Guardian": 6036,
+    "Revenant": 6037,
+    "Scholar": 6038,
+    "Undertaker": 6039,
+}
+
+# Every character can be gated - unlike ACCESS_NIGHTLORDS, there's no Tricephalos-style "no flag"
+# exception, since all 10 characters have a confirmed individually-addressable flag above.
+ACCESS_CHARACTERS = list(CHARACTERS)
+
+# Keyed the same shape as ACCESS_ITEM_EVENT_FLAGS (name -> flag, key already suffixed) so
+# client.py's _sync_event_flags can treat both dicts identically.
+CHARACTER_ACCESS_EVENT_FLAGS = {
+    f"{name} Character Access": flag for name, flag in CHARACTER_EVENT_FLAGS.items()
+}
+
+
+def starting_free_characters(starting_character: str) -> list:
+    """List of characters that start unlocked for a given starting character.
+    """
+    return [starting_character]
 
 
 # --- Item-drop write path (filler weapons) ---

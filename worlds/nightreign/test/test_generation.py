@@ -66,6 +66,134 @@ class NightreignGateBossAndCharacterTest(WorldTestBase):
     options = {"gate_boss_access": True, "bosses_with_characters": "boss_and_character"}
 
 
+# --- `gate_character_access` option coverage ---
+# Same shape as the gate_boss_access classes above - one per starting_character, exercising the
+# character access_rule branch in create_regions()'s _make_location. Always paired with
+# bosses_with_characters=boss_and_character: that's the only mode where a location's access_rule
+# depends on which character is playing at all (see create_regions()'s comment on why "boss" mode
+# has no such dependency), so it's the only mode where a character-gating access_rule mistake could
+# reintroduce the original boss self-loop softlock bug for characters instead of Nightlords.
+
+class NightreignGateCharacterOffTest(WorldTestBase):
+    game = "Elden Ring Nightreign"
+    options = {"gate_character_access": False, "bosses_with_characters": "boss_and_character"}
+
+
+class NightreignGateCharacterWylderTest(WorldTestBase):
+    game = "Elden Ring Nightreign"
+    options = {
+        "gate_character_access": True, "bosses_with_characters": "boss_and_character",
+        "starting_character": "wylder",
+    }
+
+
+class NightreignGateCharacterGuardianTest(WorldTestBase):
+    game = "Elden Ring Nightreign"
+    options = {
+        "gate_character_access": True, "bosses_with_characters": "boss_and_character",
+        "starting_character": "guardian",
+    }
+
+
+class NightreignGateCharacterIroneyeTest(WorldTestBase):
+    game = "Elden Ring Nightreign"
+    options = {
+        "gate_character_access": True, "bosses_with_characters": "boss_and_character",
+        "starting_character": "ironeye",
+    }
+
+
+class NightreignGateCharacterDuchessTest(WorldTestBase):
+    game = "Elden Ring Nightreign"
+    options = {
+        "gate_character_access": True, "bosses_with_characters": "boss_and_character",
+        "starting_character": "duchess",
+    }
+
+
+class NightreignGateCharacterRaiderTest(WorldTestBase):
+    game = "Elden Ring Nightreign"
+    options = {
+        "gate_character_access": True, "bosses_with_characters": "boss_and_character",
+        "starting_character": "raider",
+    }
+
+
+class NightreignGateCharacterRevenantTest(WorldTestBase):
+    game = "Elden Ring Nightreign"
+    options = {
+        "gate_character_access": True, "bosses_with_characters": "boss_and_character",
+        "starting_character": "revenant",
+    }
+
+
+class NightreignGateCharacterRecluseTest(WorldTestBase):
+    game = "Elden Ring Nightreign"
+    options = {
+        "gate_character_access": True, "bosses_with_characters": "boss_and_character",
+        "starting_character": "recluse",
+    }
+
+
+class NightreignGateCharacterExecutorTest(WorldTestBase):
+    game = "Elden Ring Nightreign"
+    options = {
+        "gate_character_access": True, "bosses_with_characters": "boss_and_character",
+        "starting_character": "executor",
+    }
+
+
+class NightreignGateCharacterScholarTest(WorldTestBase):
+    game = "Elden Ring Nightreign"
+    options = {
+        "gate_character_access": True, "bosses_with_characters": "boss_and_character",
+        "starting_character": "scholar",
+    }
+
+
+class NightreignGateCharacterUndertakerTest(WorldTestBase):
+    game = "Elden Ring Nightreign"
+    options = {
+        "gate_character_access": True, "bosses_with_characters": "boss_and_character",
+        "starting_character": "undertaker",
+    }
+
+
+class NightreignGateBossAndCharacterAccessTogetherTest(WorldTestBase):
+    game = "Elden Ring Nightreign"
+    options = {
+        "gate_boss_access": True,
+        "gate_character_access": True,
+        "bosses_with_characters": "boss_and_character",
+        "starting_boss": "fissure_in_the_fog",  # the exact starting_boss the original softlock used
+        "starting_character": "revenant",
+    }
+    # Both gates on at once, combined via _make_location's AND-rule - the real stress case. No
+    # dedicated test method needed, same reasoning as NightreignEverdarkWithGateTest: WorldTestBase's
+    # default test_fill already reruns real distribute_items_restrictive and asserts nothing is
+    # unreachable.
+
+
+class NightreignGateCharacterNotEnoughRoomTest(WorldTestBase):
+    game = "Elden Ring Nightreign"
+    auto_construct = False
+    options = {
+        "gate_boss_access": False,
+        "gate_character_access": True,
+        "bosses_with_characters": "boss",  # locations aren't per-character in this mode
+        "included_characters": CHARACTERS,  # all 10, minus 1 starting = 9 Character Access items
+        "included_nightlords": ["Tricephalos"],  # only 1 location exists to hold them
+    }
+
+    def test_not_enough_locations_for_character_access_raises(self) -> None:
+        # "boss" mode's location count depends only on included_nightlords, not
+        # included_characters, so a slot can ask for more Character Access items than there are
+        # locations to hold them - this should raise clearly rather than silently producing a
+        # negative filler_count.
+        with self.assertRaises(OptionError):
+            self.world_setup()
+
+
 # --- `enable_everdark_checks` option coverage ---
 # Everdark locations get the same access_rule gating as normal ones (see create_regions()), so
 # test_fill (via WorldTestBase's default auto_construct) already re-exercises the softlock

@@ -13,9 +13,6 @@ from .game_data import CHARACTERS, NIGHTLORDS
 
 class IncludedCharacters(OptionSet):
     """Which characters to generate location checks for.
-
-    One location is generated per included character x included Nightlord
-    combination. Defaults to all characters.
     """
 
     display_name = "Included Characters"
@@ -25,10 +22,6 @@ class IncludedCharacters(OptionSet):
 
 class IncludedNightlords(OptionSet):
     """Which Nightlords to generate location checks for.
-
-    One location is generated per included character x included Nightlord
-    combination. Defaults to all currently-supported Nightlords - DLC
-    Nightlord(s) aren't supported yet, see the game page for status.
     """
 
     display_name = "Included Nightlords"
@@ -37,14 +30,8 @@ class IncludedNightlords(OptionSet):
 
 
 class BossesWithCharacters(Choice):
-    """If location checks are generated as just defeating the boss or defeating 
-    the boss as a specific character.
-
-    "boss" (default): one check per Nightlord - "Defeat X" - any character's win counts, and
-    included_characters has no effect on what locations exist.
-
-    "boss_and_character": one check per included character x included Nightlord combination -
-    "Defeat X as Y" - the original, more granular mode.
+    """Enable this if you want to generate checks for defeating each boss with each character, 
+    rather than just one check per boss.
     """
 
     display_name = "Bosses With Characters"
@@ -86,6 +73,41 @@ class GateBossAccess(Toggle):
     default = 1
 
 
+class StartingCharacter(Choice):
+    """Which character starts unlocked, before receiving any Character Access items - or "random"
+    to have the generator pick one for this slot.
+    """
+
+    display_name = "Starting Character"
+    option_wylder = 0
+    option_guardian = 1
+    option_ironeye = 2
+    option_duchess = 3
+    option_raider = 4
+    option_revenant = 5
+    option_recluse = 6
+    option_executor = 7
+    option_scholar = 8
+    option_undertaker = 9
+    default = 0
+
+
+# option_* values above are positionally mapped to game_data.CHARACTERS order (world code resolves
+# a chosen value via CHARACTERS[value]) - this catches drift if the roster is ever reordered/edited.
+assert [StartingCharacter.name_lookup[i] for i in range(len(CHARACTERS))] == [
+    name.lower().replace(" ", "_") for name in CHARACTERS
+], "StartingCharacter option values must stay in sync with game_data.CHARACTERS order."
+
+
+class GateCharacterAccess(Toggle):
+    """If enabled, receive access to characters from the multiworld.
+    If disabled, all characters are available from the start.
+    """
+
+    display_name = "Gate Character Access Behind Items"
+    default = 0
+
+
 class ReceiveWeapons(Toggle):
     """If enabled, includes randomized weapons as filler items.
     """
@@ -105,26 +127,13 @@ class ReceiveTalismans(Toggle):
 class Goal(Choice):
     """What this slot needs to accomplish to complete its goal.
 
-    "Night Aspect" (default): defeat Night Aspect - the vanilla game's own ending/credits boss. With
-    bosses_with_characters set to boss_and_character, any one included character's Night
-    Aspect win counts (matches how the vanilla game rolls credits on the first Night Aspect
-    kill regardless of character). Night Aspect must be in included_nightlords, or this goal
-    is unreachable.
+    "Night Aspect" (default): defeat Night Aspect - the vanilla game's own ending/credits boss.
 
-    "All Bosses": every included character x Nightlord location (per
-    bosses_with_characters) must be checked - the original behavior. A titanic goal.
+    "All Bosses": defeat every boss with every included character. A titanic goal.
 
-    "All Bosses Any Character": defeat every included Nightlord at least once, with any
-    included character - only differs from all_bosses when bosses_with_characters is
-    boss_and_character (in "boss" mode they're identical, since there's already only one
-    location per Nightlord). Every included character x Nightlord location still gets
-    generated as a regular, non-required check - this only changes what's required to finish.
+    "All Bosses Any Character": defeat every included Nightlord at least once.
 
-    "Random": bosses_with_characters must be boss_and_character. At generation time,
-    a random number of specific "Defeat X as Y" locations (between goal_random_min and
-    goal_random_max, drawn only from this slot's included_characters x included_nightlords,
-    no duplicates) are selected as the required objective set. Every other included
-    combination still exists as a regular, non-required check.
+    "Random": creates a random subset of defeating nightlords as random characters. 
     """
 
     display_name = "Goal"
@@ -136,16 +145,7 @@ class Goal(Choice):
 
 
 class EnableEverdarkChecks(Toggle):
-    """If enabled, adds a separate "Defeat Everdark X" location per Nightlord (mirroring
-    bosses_with_characters, same as normal boss locations) alongside the regular ones. Never
-    required for your goal, regardless of the goal option chosen - purely additional, optional
-    checks.
-
-    DISCLAIMER: Everdark Sovereigns only appear via an external, rotating weekly schedule this
-    world has no control over and cannot unlock for you - some weeks a given Nightlord's Everdark
-    form may not be available at all. Enabling this option is an explicit acknowledgment that
-    reaching an Everdark expedition (including via third-party tools, if you choose to use one) is
-    entirely your own responsibility, not something this world or its client manages.
+    """If enabled, adds checks for defeating Everdark Soverigns.
     """
 
     display_name = "Enable Everdark Checks"
@@ -154,8 +154,6 @@ class EnableEverdarkChecks(Toggle):
 
 class GoalRandomMin(Range):
     """Minimum number of specific "Defeat X as Y" objectives to require, when goal is random_subset.
-
-    Ignored unless goal is set to random_subset.
     """
 
     display_name = "Random Goal Minimum Objectives"
@@ -166,10 +164,6 @@ class GoalRandomMin(Range):
 
 class GoalRandomMax(Range):
     """Maximum number of specific "Defeat X as Y" objectives to require, when goal is random_subset.
-
-    Ignored unless goal is set to random_subset. Silently clamped down to however many
-    included_characters x included_nightlords combinations this slot actually has available,
-    if set higher than that.
     """
 
     display_name = "Random Goal Maximum Objectives"
@@ -185,6 +179,8 @@ class NightreignOptions(PerGameCommonOptions):
     bosses_with_characters: BossesWithCharacters
     starting_boss: StartingBoss
     gate_boss_access: GateBossAccess
+    starting_character: StartingCharacter
+    gate_character_access: GateCharacterAccess
     receive_weapons: ReceiveWeapons
     receive_talismans: ReceiveTalismans
     enable_everdark_checks: EnableEverdarkChecks

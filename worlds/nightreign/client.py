@@ -9,7 +9,10 @@ around Everdark availability being outside this project's control. When the
 gate_boss_access option is on for this
 slot (learned from slot_data on connect), received Access items are synced
 into the game via memory_writer.py's SetEventFlag port, gating which
-Nightlords are actually selectable. When randomize_weapons and/or
+Nightlords are actually selectable. gate_character_access works the same way for received
+Character Access items, gating which playable characters are selectable - and, when
+bosses_with_characters is boss_and_character, suppressing checks for a win as a not-yet-unlocked
+character. When randomize_weapons and/or
 randomize_talismans is on, received "Randomized Weapon"/"Randomized Talisman"
 filler items are rolled into a real weapon/talisman client-side (see
 _roll_weapon_drop/_roll_talisman_drop) and dropped on the ground via
@@ -42,10 +45,11 @@ from CommonClient import (ClientCommandProcessor, CommonContext, get_base_parser
                           gui_enabled, server_loop)
 from NetUtils import ClientStatus
 
-from .game_data import (ACCESS_ITEM_EVENT_FLAGS, ACCESS_NIGHTLORDS, EFFECT_CAP_MAP,
-                        EVERDARK_NIGHTLORDS, TALISMAN_TABLE, WEAPON_ART_TABLE, WEAPON_TABLE,
-                        is_flying_animation, natural_weapon_tier, roll_effect_tier,
-                        roll_upgrade_tier, starting_free_nightlords)
+from .game_data import (ACCESS_CHARACTERS, ACCESS_ITEM_EVENT_FLAGS, ACCESS_NIGHTLORDS,
+                        CHARACTER_ACCESS_EVENT_FLAGS, EFFECT_CAP_MAP, EVERDARK_NIGHTLORDS,
+                        TALISMAN_TABLE, WEAPON_ART_TABLE, WEAPON_TABLE, is_flying_animation,
+                        natural_weapon_tier, roll_effect_tier, roll_upgrade_tier,
+                        starting_free_characters, starting_free_nightlords)
 from .Items import lookup_id_to_name
 from .Locations import (location_name, location_name_boss_only, location_name_everdark,
                         location_name_everdark_boss_only, location_name_to_id)
@@ -97,10 +101,12 @@ class NightreignContext(CommonContext):
     checked_location_ids: set
     slot_data: dict
     gate_boss_access: bool
+    gate_character_access: bool
     randomize_weapons: bool
     randomize_talismans: bool
     enable_everdark_checks: bool
     freed_nightlords: set
+    freed_characters: set
     per_character_checks: bool
     goal: str
     goal_groups: list
@@ -116,6 +122,7 @@ class NightreignContext(CommonContext):
     _delivered_weapon_keys: set
     _delivered_talisman_keys: set
     _locked_boss_warned: bool
+    _locked_character_warned: bool
     _toast_text: Optional[str]
     _toast_expiry: Optional[float]
 
@@ -127,10 +134,12 @@ class NightreignContext(CommonContext):
         self.checked_location_ids = set()
         self.slot_data = {}
         self.gate_boss_access = False
+        self.gate_character_access = False
         self.randomize_weapons = False
         self.randomize_talismans = False
         self.enable_everdark_checks = False
         self.freed_nightlords = set()
+        self.freed_characters = set()
         self.per_character_checks = False
         self.goal = "all_bosses"
         self.goal_groups = []
@@ -145,6 +154,7 @@ class NightreignContext(CommonContext):
         self._delivered_weapon_keys = set()
         self._delivered_talisman_keys = set()
         self._locked_boss_warned = False
+        self._locked_character_warned = False
         self._toast_text = None
         self._toast_expiry = None
 
@@ -176,6 +186,7 @@ class NightreignContext(CommonContext):
             # it sets this itself here.
             self.slot_data = args.get("slot_data", {}) or {}
             self.gate_boss_access = bool(self.slot_data.get("gate_boss_access", False))
+            self.gate_character_access = bool(self.slot_data.get("gate_character_access", False))
             # slot_data keys are "receive_weapons"/"receive_talismans" (see Options.py/__init__.py's
             # fill_slot_data), not "randomize_weapons"/"randomize_talismans" - using the wrong keys
             # previously fell back to False regardless of the player's actual YAML settings.
@@ -185,12 +196,16 @@ class NightreignContext(CommonContext):
             self.freed_nightlords = set(
                 starting_free_nightlords(self.slot_data.get("starting_boss", "Tricephalos"))
             )
+            self.freed_characters = set(
+                starting_free_characters(self.slot_data.get("starting_character", "Wylder"))
+            )
             self.per_character_checks = (
                 self.slot_data.get("bosses_with_characters", "boss") == "boss_and_character"
             )
             self.goal = self.slot_data.get("goal", "all_bosses")
             self.goal_groups = self.slot_data.get("goal_groups") or []
             logger.info("gate_boss_access=%s for this slot.", self.gate_boss_access)
+            logger.info("gate_character_access=%s for this slot.", self.gate_character_access)
 
             # A flag write only confirms dispatch, not that it landed in-game (see
             # memory_writer.py's set_event_flag docstring), so clear this on every fresh AP
@@ -216,7 +231,7 @@ class NightreignContext(CommonContext):
             self._ensure_animation_ready()
 
         if cmd == "ReceivedItems":
-            if self.gate_boss_access:
+            if self.gate_boss_access or self.gate_character_access:
                 asyncio.create_task(self._sync_event_flags())
             # No action needed for randomize_weapons/randomize_talismans - _pending_drop_keys()
             # recomputes from self.items_received on every poll_loop hub-exit edge, so a new
@@ -248,24 +263,31 @@ class NightreignContext(CommonContext):
             await self.send_msgs([{"cmd": "StatusUpdate", "status": ClientStatus.CLIENT_GOAL}])
             logger.info("Goal '%s' complete!", self.goal)
 
-    # --- Boss-access gating (write path) ---
-    # Off unless slot_data's gate_boss_access is on. Firing SetEventFlag(110) for any one of the
-    # 6 secondary-boss Access items reveals all 6 in the game's own menu (all-or-nothing).
+    # --- Boss/character-access gating (write path) ---
+    # Off unless slot_data's gate_boss_access/gate_character_access is on. Firing SetEventFlag(110)
+    # for any one of the 6 secondary-boss Access items reveals all 6 in the game's own menu
+    # (all-or-nothing) - character flags don't have this quirk, each is individually addressable
+    # (live-verified, see game_data.CHARACTER_EVENT_FLAGS).
 
     def _owned_item_names(self) -> set:
-        # freed_nightlords (from starting_boss) are stitched in as synthetic "X Access" entries
-        # so every downstream consumer - flag-firing, overlay's locked/unlocked display - treats
-        # them exactly like an already-received Access item, with no separate code path needed.
+        # freed_nightlords (from starting_boss) and freed_characters (from starting_character) are
+        # stitched in as synthetic "X Access"/"X Character Access" entries so every downstream
+        # consumer - flag-firing, overlay's locked/unlocked display - treats them exactly like an
+        # already-received Access item, with no separate code path needed.
         owned = {lookup_id_to_name.get(i.item) for i in self.items_received}
         owned |= {f"{name} Access" for name in self.freed_nightlords}
+        owned |= {f"{name} Character Access" for name in self.freed_characters}
         return owned
 
     async def _sync_event_flags(self) -> None:
-        if not self.gate_boss_access or self.writer is None:
+        if not (self.gate_boss_access or self.gate_character_access) or self.writer is None:
             return
         owned_names = self._owned_item_names()
         needed_flags = {
             flag for name, flag in ACCESS_ITEM_EVENT_FLAGS.items() if name in owned_names
+        }
+        needed_flags |= {
+            flag for name, flag in CHARACTER_ACCESS_EVENT_FLAGS.items() if name in owned_names
         }
         needed_flags -= self._synced_flags
         if not needed_flags:
@@ -285,12 +307,13 @@ class NightreignContext(CommonContext):
                 )
 
     def _ensure_gating_ready(self) -> None:
-        """Builds the writer once both gate_boss_access and the game connection are known,
-        regardless of which arrived first this session - the game process attaching and the AP
-        'Connected' packet (which is what sets gate_boss_access) race each other, and either can
-        win. Called from both sides of that race: here and from poll_loop's connect-transition.
-        A no-op once the writer already exists."""
-        if not self.gate_boss_access or not self.reader.connected or self.writer is not None:
+        """Builds the writer once either gate_boss_access/gate_character_access and the game
+        connection are known, regardless of which arrived first this session - the game process
+        attaching and the AP 'Connected' packet (which is what sets both options) race each other,
+        and either can win. Called from both sides of that race: here and from poll_loop's
+        connect-transition. A no-op once the writer already exists."""
+        if (not (self.gate_boss_access or self.gate_character_access) or not self.reader.connected
+                or self.writer is not None):
             return
         self._try_build_writer()
 
@@ -328,16 +351,38 @@ class NightreignContext(CommonContext):
             "boss": boss_name,
         })
 
+    def _warn_if_character_locked(self, character_name: str) -> None:
+        """Character analog of _warn_if_boss_locked above - logs (and records to run state) an
+        Expedition started as a character whose Character Access item this slot hasn't received
+        yet. Unlike the boss batch-unlock quirk, character flags are individually addressable (see
+        game_data.CHARACTER_EVENT_FLAGS), so nothing in-game stops the player from launching with
+        a character unlocked some other way (e.g. a pre-existing save) even though only this one
+        was actually earned via AP."""
+        access_name = f"{character_name} Character Access"
+        if (access_name not in CHARACTER_ACCESS_EVENT_FLAGS
+                or access_name in self._owned_item_names()):
+            return
+        logger.warning(
+            "Expedition started as %s, but its Character Access item hasn't been received yet "
+            "for this slot - this character is still locked for AP purposes.", character_name
+        )
+        self._append_event({
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "type": "locked_character_attempt",
+            "character": character_name,
+        })
+
     def _try_build_writer(self) -> None:
         try:
             ptr_slot, base_a_addr = self.reader.resolve_event_flag_targets()
         except PointerNotFoundError as e:
-            logger.error("Boss-gating write path unavailable (%s) - disabling gating this "
-                         "session, the read-only tracker is unaffected.", e)
+            logger.error("Boss/character-gating write path unavailable (%s) - disabling gating "
+                         "this session, the read-only tracker is unaffected.", e)
             self.gate_boss_access = False
+            self.gate_character_access = False
             return
         self.writer = NightreignMemoryWriter(self.reader.pm, ptr_slot, base_a_addr)
-        logger.info("Boss-gating writer resolved (ptr_slot=0x%X, base_a=0x%X).",
+        logger.info("Boss/character-gating writer resolved (ptr_slot=0x%X, base_a=0x%X).",
                     ptr_slot, base_a_addr)
 
     # --- Randomized item-drop write path (weapons and talismans) ---
@@ -596,12 +641,13 @@ class NightreignContext(CommonContext):
                     self._worldchrman_slot = None
                     self._hub_exit_time = None
                     self._locked_boss_warned = False
+                    self._locked_character_warned = False
                     try:
                         if self.reader.connect():
                             logger.info("Connected to nightreign.exe")
                             self._ensure_gating_ready()
                             self._ensure_overlay_ready()
-                            if self.gate_boss_access:
+                            if self.gate_boss_access or self.gate_character_access:
                                 asyncio.create_task(self._sync_event_flags())
                             self._ensure_item_drop_ready()
                             self._ensure_animation_ready()
@@ -620,10 +666,11 @@ class NightreignContext(CommonContext):
                 if pulse is not None:
                     self._last_pulse = pulse
 
-                if self.gate_boss_access and self.writer is not None:
-                    # Retried every tick, not just on Connected/ReceivedItems: freed_nightlords never
-                    # arrives as a ReceivedItems packet, so this is the only retry path for a flag
-                    # write that failed from a transiently-unreadable pointer. A no-op once synced.
+                if (self.gate_boss_access or self.gate_character_access) and self.writer is not None:
+                    # Retried every tick, not just on Connected/ReceivedItems: freed_nightlords/
+                    # freed_characters never arrive as a ReceivedItems packet, so this is the only
+                    # retry path for a flag write that failed from a transiently-unreadable pointer.
+                    # A no-op once synced.
                     await self._sync_event_flags()
 
                 # Read once per tick and shared below - True in hub/menu/loading, False in an
@@ -644,6 +691,15 @@ class NightreignContext(CommonContext):
                         if boss.status == "matched":
                             self._locked_boss_warned = True
                             self._warn_if_boss_locked(boss.name)
+
+                if self.gate_character_access:
+                    if in_hub:
+                        self._locked_character_warned = False
+                    elif in_hub is False and not self._locked_character_warned:
+                        character_name = self.reader.read_character_class_name()
+                        if character_name is not None:
+                            self._locked_character_warned = True
+                            self._warn_if_character_locked(character_name)
 
                 if self.randomize_weapons or self.randomize_talismans:
                     # Tracks how long in_hub has continuously been False, so the settle-time check
@@ -674,13 +730,19 @@ class NightreignContext(CommonContext):
                             await self._deliver_pending_talismans()
 
                 if self.overlay is not None:
-                    if self.gate_boss_access:
+                    locked_names = []
+                    if self.gate_boss_access or self.gate_character_access:
                         owned_names = self._owned_item_names()
-                        locked_names = [
-                            name for name in ACCESS_NIGHTLORDS if f"{name} Access" not in owned_names
-                        ]
-                    else:
-                        locked_names = []
+                        if self.gate_boss_access:
+                            locked_names += [
+                                name for name in ACCESS_NIGHTLORDS
+                                if f"{name} Access" not in owned_names
+                            ]
+                        if self.gate_character_access:
+                            locked_names += [
+                                name for name in ACCESS_CHARACTERS
+                                if f"{name} Character Access" not in owned_names
+                            ]
 
                     # Boss/character debug panel - always updated regardless of gate_boss_access,
                     # since win detection matters for every player. Read every tick in both the hub
@@ -730,6 +792,23 @@ class NightreignContext(CommonContext):
         if self.per_character_checks and character_name is None:
             logger.warning("Detected a win, but couldn't read the character class - skipping "
                             "this check.")
+            return
+
+        if (self.per_character_checks and self.gate_character_access
+                and f"{character_name} Character Access" not in self._owned_item_names()):
+            # The user's own requirement for this feature: no check for a character this slot
+            # hasn't unlocked via AP yet, even though nothing in-game should let the player select
+            # it (gate_character_access's write path locks it out) - a defense-in-depth guard for
+            # any case where that didn't hold (e.g. a pre-existing save, a missed/failed flag sync).
+            logger.info(
+                "Win detected as %s, but this slot hasn't received %s's Character Access item "
+                "yet - not sending.", character_name, character_name,
+            )
+            self._append_event({
+                "timestamp": timestamp,
+                "type": "locked_character_win_skipped",
+                "character": character_name,
+            })
             return
 
         if boss.status != "matched":

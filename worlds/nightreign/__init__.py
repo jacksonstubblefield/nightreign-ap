@@ -3,8 +3,8 @@ from Options import OptionError
 from worlds.AutoWorld import World, WebWorld
 from worlds.LauncherComponents import Component, Type, components, icon_paths, launch_subprocess
 
-from .game_data import (ACCESS_NIGHTLORDS, CHARACTERS, EVERDARK_NIGHTLORDS, NIGHTLORDS,
-                        starting_free_nightlords)
+from .game_data import (ACCESS_CHARACTERS, ACCESS_NIGHTLORDS, CHARACTERS, EVERDARK_NIGHTLORDS,
+                        NIGHTLORDS, starting_free_characters, starting_free_nightlords)
 from .Items import FILLER_ITEM_NAMES, NightreignItem, item_name_to_id, item_table
 from .Locations import (NightreignLocation, location_name, location_name_boss_only,
                         location_name_everdark, location_name_everdark_boss_only,
@@ -48,7 +48,11 @@ class NightreignWorld(World):
     receiving that Nightlord's Access item - written into the running game
     process where the game supports it (all but Tricephalos, which has no
     gating flag and is tracked overlay-side only); otherwise received items
-    are flavorful and have no in-game effect. With enable_everdark_checks on, defeating a
+    are flavorful and have no in-game effect. The gate_character_access option works the same way
+    for playable characters instead of Nightlords - every character other than the chosen
+    starting_character is gated behind receiving that character's Character Access item, and with
+    bosses_with_characters set to boss_and_character, a win as a not-yet-unlocked character also
+    doesn't send its check. With enable_everdark_checks on, defeating a
     Nightlord's Everdark Sovereign variant is a separate, optional location - never required for
     the goal, since Everdark availability depends on an external weekly rotation this world can't
     unlock or guarantee (see Options.py's disclaimer).
@@ -69,6 +73,8 @@ class NightreignWorld(World):
     active_locations: list[str]
     starting_boss: str
     freed_nightlords: set
+    starting_character: str
+    freed_characters: set
     goal_groups: list[list[int]]
     goal_random_count: int
 
@@ -89,6 +95,8 @@ class NightreignWorld(World):
 
         self.starting_boss = NIGHTLORDS[self.options.starting_boss.value]
         self.freed_nightlords = set(starting_free_nightlords(self.starting_boss))
+        self.starting_character = CHARACTERS[self.options.starting_character.value]
+        self.freed_characters = set(starting_free_characters(self.starting_character))
 
         included_characters = self.options.included_characters.value
         included_nightlords = self.options.included_nightlords.value
@@ -128,11 +136,13 @@ class NightreignWorld(World):
 
         # Iterate CHARACTERS/NIGHTLORDS (fixed order) rather than the option sets directly, so
         # location creation order stays deterministic. Each location is paired with the Nightlord
-        # it defeats so the access rule below can gate it without re-parsing the location name.
+        # it defeats (and, in boss_and_character mode, the character - None in "boss" mode, since
+        # locations aren't tied to a specific character there) so the access rule below can gate
+        # it without re-parsing the location name.
         if self.options.bosses_with_characters == "boss_and_character":
             included_characters = self.options.included_characters.value
             locations = [
-                (location_name(character, nightlord), nightlord)
+                (location_name(character, nightlord), nightlord, character)
                 for character in CHARACTERS
                 if character in included_characters
                 for nightlord in NIGHTLORDS
@@ -140,7 +150,7 @@ class NightreignWorld(World):
             ]
         else:
             locations = [
-                (location_name_boss_only(nightlord), nightlord)
+                (location_name_boss_only(nightlord), nightlord, None)
                 for nightlord in NIGHTLORDS
                 if nightlord in included_nightlords
             ]
@@ -157,7 +167,7 @@ class NightreignWorld(World):
             if self.options.bosses_with_characters == "boss_and_character":
                 included_characters = self.options.included_characters.value
                 everdark_locations = [
-                    (location_name_everdark(character, nightlord), nightlord)
+                    (location_name_everdark(character, nightlord), nightlord, character)
                     for character in CHARACTERS
                     if character in included_characters
                     for nightlord in EVERDARK_NIGHTLORDS
@@ -165,12 +175,14 @@ class NightreignWorld(World):
                 ]
             else:
                 everdark_locations = [
-                    (location_name_everdark_boss_only(nightlord), nightlord)
+                    (location_name_everdark_boss_only(nightlord), nightlord, None)
                     for nightlord in EVERDARK_NIGHTLORDS
                     if nightlord in everdark_nightlords
                 ]
 
-        self.active_locations = [name for name, _nightlord in locations + everdark_locations]
+        self.active_locations = [
+            name for name, _nightlord, _character in locations + everdark_locations
+        ]
 
         # goal_groups: a list of groups, each satisfied by ANY one of its location ids being
         # checked; the goal is complete once EVERY group is satisfied (see client.py's
@@ -180,34 +192,51 @@ class NightreignWorld(World):
         ids_by_name = self.location_name_to_id
         if goal == "night_aspect":
             self.goal_groups = [[
-                ids_by_name[name] for name, nightlord in locations if nightlord == "Night Aspect"
+                ids_by_name[name] for name, nightlord, _character in locations
+                if nightlord == "Night Aspect"
             ]]
         elif goal == "all_bosses_any_character":
             self.goal_groups = [
-                [ids_by_name[name] for name, nl in locations if nl == nightlord]
+                [ids_by_name[name] for name, nl, _character in locations if nl == nightlord]
                 for nightlord in NIGHTLORDS
                 if nightlord in included_nightlords
             ]
         elif goal == "random_subset":
             chosen = self.random.sample(locations, self.goal_random_count)
-            self.goal_groups = [[ids_by_name[name]] for name, _nightlord in chosen]
+            self.goal_groups = [[ids_by_name[name]] for name, _nightlord, _character in chosen]
         else:
-            self.goal_groups = [[ids_by_name[name]] for name, _nightlord in locations]
+            self.goal_groups = [[ids_by_name[name]] for name, _nightlord, _character in locations]
 
         menu = Region("Menu", self.player, self.multiworld)
 
-        def _make_location(name: str, nightlord: str, everdark: bool) -> NightreignLocation:
+        def _make_location(
+            name: str, nightlord: str, everdark: bool, character: str | None
+        ) -> NightreignLocation:
             location = NightreignLocation(self.player, name, self.location_name_to_id[name], menu)
             # Without this, the fill algorithm has no idea defeating a Nightlord requires
             # earning it first - it can (and did) place the only route to a Nightlord behind an
             # unreachable location, softlocking the run. gate_boss_access off needs no rule.
             # Everdark locations reuse the same base Nightlord's Access item - there's no separate
             # "Everdark X Access" item, since Everdark is a variant fight against the same
-            # Nightlord, not a distinct one.
+            # Nightlord, not a distinct one. character is only set in boss_and_character mode - in
+            # "boss" mode no location is tied to a specific character, so gate_character_access
+            # there only controls in-game unlocking, never location reachability. Combined via a
+            # small AND-rule when both the Nightlord and the character are gated, the same way AP's
+            # access_rule mechanism is meant to be composed.
+            rules = []
             if self.options.gate_boss_access and nightlord not in self.freed_nightlords:
-                location.access_rule = lambda state, nightlord=nightlord: state.has(
+                rules.append(lambda state, nightlord=nightlord: state.has(
                     f"{nightlord} Access", self.player
-                )
+                ))
+            if (character is not None and self.options.gate_character_access
+                    and character not in self.freed_characters):
+                rules.append(lambda state, character=character: state.has(
+                    f"{character} Character Access", self.player
+                ))
+            if len(rules) == 1:
+                location.access_rule = rules[0]
+            elif rules:
+                location.access_rule = lambda state, rules=rules: all(rule(state) for rule in rules)
             if everdark:
                 # EXCLUDED stops the fill algorithm from ever placing a progression/useful item
                 # here (see BaseClasses.Location.can_fill) - keeping Everdark locations out of
@@ -220,10 +249,14 @@ class NightreignWorld(World):
                 location.progress_type = LocationProgressType.EXCLUDED
             return location
 
-        for name, nightlord in locations:
-            menu.locations.append(_make_location(name, nightlord, everdark=False))
-        for name, nightlord in everdark_locations:
-            menu.locations.append(_make_location(name, nightlord, everdark=True))
+        for name, nightlord, character in locations:
+            menu.locations.append(
+                _make_location(name, nightlord, everdark=False, character=character)
+            )
+        for name, nightlord, character in everdark_locations:
+            menu.locations.append(
+                _make_location(name, nightlord, everdark=True, character=character)
+            )
         self.multiworld.regions.append(menu)
 
     def create_items(self) -> None:
@@ -238,12 +271,38 @@ class NightreignWorld(World):
                 if name in included_nightlords and name not in self.freed_nightlords
             ]
 
+        character_access_names = []
+        if self.options.gate_character_access:
+            included_characters = self.options.included_characters.value
+            character_access_names = [
+                f"{name} Character Access" for name in ACCESS_CHARACTERS
+                if name in included_characters and name not in self.freed_characters
+            ]
+
         self.multiworld.itempool += [self.create_item(name) for name in access_names]
+        self.multiworld.itempool += [self.create_item(name) for name in character_access_names]
 
         # access_names is always <= active_locations: location count is
         # |included_characters| * |included_nightlords|, at least |included_nightlords|
-        # (and therefore at least len(access_names)) whenever it's non-empty.
-        filler_count = len(self.active_locations) - len(access_names)
+        # (and therefore at least len(access_names)) whenever it's non-empty. character_access_names
+        # has no equivalent guarantee - in "boss" mode active_locations is bounded only by
+        # |included_nightlords|, independent of |included_characters|, so a slot could ask for more
+        # Character Access items than there are locations to hold them (e.g. many included
+        # characters but a single included Nightlord). Guard explicitly rather than let
+        # itempool/location counts silently desync.
+        total_progression = len(access_names) + len(character_access_names)
+        if total_progression > len(self.active_locations):
+            raise OptionError(
+                f"{self.player_name}: gate_boss_access/gate_character_access together need "
+                f"{total_progression} progression item slots, but only "
+                f"{len(self.active_locations)} locations are generated with the current "
+                "bosses_with_characters/included_characters/included_nightlords settings - not "
+                "enough room to place them. Include more characters/Nightlords, switch "
+                "bosses_with_characters to boss_and_character, or disable one of the gating "
+                "options."
+            )
+
+        filler_count = len(self.active_locations) - total_progression
         self.multiworld.itempool += [self.create_filler() for _ in range(filler_count)]
 
     def create_item(self, name: str) -> NightreignItem:
@@ -261,10 +320,12 @@ class NightreignWorld(World):
     def fill_slot_data(self) -> dict:
         return {
             "gate_boss_access": bool(self.options.gate_boss_access),
+            "gate_character_access": bool(self.options.gate_character_access),
             "receive_weapons": bool(self.options.receive_weapons),
             "receive_talismans": bool(self.options.receive_talismans),
             "enable_everdark_checks": bool(self.options.enable_everdark_checks),
             "starting_boss": self.starting_boss,
+            "starting_character": self.starting_character,
             "bosses_with_characters": self.options.bosses_with_characters.current_key,
             "goal": self.options.goal.current_key,
             "goal_groups": self.goal_groups,

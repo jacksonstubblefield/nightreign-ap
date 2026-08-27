@@ -146,6 +146,9 @@ class Goal(Choice):
 
 class EnableEverdarkChecks(Toggle):
     """If enabled, adds checks for defeating Everdark Soverigns.
+
+    Note: The Nightreign client cannot unlock access to Everdark Sovereigns, you'll have to find
+    an alternative source for selecting them in the expedition menu. 
     """
 
     display_name = "Enable Everdark Checks"

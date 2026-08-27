@@ -9,10 +9,15 @@ around Everdark availability being outside this project's control. When the
 gate_boss_access option is on for this
 slot (learned from slot_data on connect), received Access items are synced
 into the game via memory_writer.py's SetEventFlag port, gating which
-Nightlords are actually selectable. gate_character_access works the same way for received
-Character Access items, gating which playable characters are selectable - and, when
-bosses_with_characters is boss_and_character, suppressing checks for a win as a not-yet-unlocked
-character. When randomize_weapons and/or
+Nightlords are actually selectable - though the 6 secondary bosses share one EventFlag, so
+receiving any one of their Access items reveals all 6 in-game, not just the one received (see
+game_data.EVENT_FLAG_SECONDARY_BOSSES). gate_character_access works the same way for received
+Character Access items, gating which playable characters are selectable (each individually
+addressable, no shared-flag quirk there). Both also suppress checks client-side, keyed on the
+specific Nightlord/character's own Access item rather than trusting in-game selectability: this is
+essential (not just defense-in-depth) for gate_boss_access given the shared-flag quirk above - e.g.
+a slot that's only received "Augur Access" can still queue into Fissure in the Fog in-game, and the
+client must independently catch and skip that win. When randomize_weapons and/or
 randomize_talismans is on, received "Randomized Weapon"/"Randomized Talisman"
 filler items are rolled into a real weapon/talisman client-side (see
 _roll_weapon_drop/_roll_talisman_drop) and dropped on the ground via
@@ -20,7 +25,10 @@ memory_writer.py's NightreignItemDropWriter (shared by both - it's item-type
 agnostic) as soon as the player is confirmed both in an Expedition and not
 mid-flight (see game_data.py's WORLDCHRMAN_AOB/is_flying_animation - the drop
 function needs a grounded position, so this is checked every poll tick, not
-just once on Expedition entry). With all three options off, received items
+just once on Expedition entry). Delivery is also withheld (not lost - just retried on a later run)
+for the whole run whenever _current_run_is_locked() says the current boss/character isn't actually
+unlocked for this slot yet, so an earned weapon/talisman drop is never spent on a run that
+_handle_win would refuse to send a check for anyway. With all three options off, received items
 have no in-game effect - the base CommonContext/CLI/GUI machinery just logs
 them, same as before any was added.
 """
@@ -53,7 +61,7 @@ from .game_data import (ACCESS_CHARACTERS, ACCESS_ITEM_EVENT_FLAGS, ACCESS_NIGHT
 from .Items import lookup_id_to_name
 from .Locations import (location_name, location_name_boss_only, location_name_everdark,
                         location_name_everdark_boss_only, location_name_to_id)
-from .memory_reader import NightreignMemoryReader, PointerNotFoundError
+from .memory_reader import EACDetectedError, NightreignMemoryReader, PointerNotFoundError
 from .memory_writer import NightreignItemDropWriter, NightreignMemoryWriter
 from .overlay import NightreignOverlay
 
@@ -123,6 +131,7 @@ class NightreignContext(CommonContext):
     _delivered_talisman_keys: set
     _locked_boss_warned: bool
     _locked_character_warned: bool
+    _locked_run_drop_withheld_warned: bool
     _toast_text: Optional[str]
     _toast_expiry: Optional[float]
 
@@ -155,6 +164,7 @@ class NightreignContext(CommonContext):
         self._delivered_talisman_keys = set()
         self._locked_boss_warned = False
         self._locked_character_warned = False
+        self._locked_run_drop_withheld_warned = False
         self._toast_text = None
         self._toast_expiry = None
 
@@ -371,6 +381,30 @@ class NightreignContext(CommonContext):
             "type": "locked_character_attempt",
             "character": character_name,
         })
+
+    def _current_run_is_locked(self) -> bool:
+        """True if the Expedition in progress is on a boss and/or character this slot hasn't
+        actually received the Access item for yet - i.e. a run that _handle_win's own
+        locked_boss_win_skipped/locked_character_win_skipped guards would refuse to send a check
+        for. Used to withhold randomized weapon/talisman drops for the same run, so an earned item
+        isn't spent on a run that was never going to pay out - mirrors those guards' own
+        owned-item-name checks exactly, so a "locked" verdict here always agrees with them. Reads
+        fresh every call rather than caching, matching _handle_win's own pattern; boss_id/character
+        can read "unset"/None for a tick or two around scene transitions, which this treats as "not
+        locked" (fail open) since delivery is retried every tick anyway - the alternative (fail
+        closed) would only delay an already-earned drop, not lose it, but there's no reason to
+        default to the more paranoid choice here when the transient case self-corrects within a
+        tick or two."""
+        owned_names = self._owned_item_names()
+        if self.gate_boss_access:
+            boss = self.reader.read_boss_id()
+            if boss.status == "matched" and f"{boss.name} Access" not in owned_names:
+                return True
+        if self.gate_character_access:
+            character_name = self.reader.read_character_class_name()
+            if character_name is not None and f"{character_name} Character Access" not in owned_names:
+                return True
+        return False
 
     def _try_build_writer(self) -> None:
         try:
@@ -642,6 +676,7 @@ class NightreignContext(CommonContext):
                     self._hub_exit_time = None
                     self._locked_boss_warned = False
                     self._locked_character_warned = False
+                    self._locked_run_drop_withheld_warned = False
                     try:
                         if self.reader.connect():
                             logger.info("Connected to nightreign.exe")
@@ -654,6 +689,20 @@ class NightreignContext(CommonContext):
                         else:
                             await asyncio.sleep(RECONNECT_INTERVAL)
                             continue
+                    except EACDetectedError as e:
+                        # Unlike PointerNotFoundError below, this isn't retry-with-backoff: nothing
+                        # about this client's read/write behavior is safe to run while EAC is
+                        # loaded, so the whole client - not just the memory-polling task - has to
+                        # stop. exit_event is the same mechanism CommonClient's own GUI exit button
+                        # uses; setting it makes main()'s `await ctx.exit_event.wait()` return and
+                        # run the normal graceful ctx.shutdown() (closes the server connection, GUI,
+                        # etc.) before the process exits.
+                        logger.error(
+                            "EasyAntiCheat detected - %s Shutting down; relaunch the game offline "
+                            "with Anti-Cheat disabled, then restart this client.", e
+                        )
+                        self.exit_event.set()
+                        return
                     except PointerNotFoundError as e:
                         logger.error("%s - is the game up to date with this client? Retrying in "
                                     "%ss.", e, BUILD_MISMATCH_BACKOFF)
@@ -707,6 +756,7 @@ class NightreignContext(CommonContext):
                     # reset on True so each fresh Expedition gets its own settle window.
                     if in_hub:
                         self._hub_exit_time = None
+                        self._locked_run_drop_withheld_warned = False
                     elif in_hub is False and self._hub_exit_time is None:
                         self._hub_exit_time = time.monotonic()
 
@@ -716,18 +766,35 @@ class NightreignContext(CommonContext):
                     and self._hub_exit_time is not None
                     and time.monotonic() - self._hub_exit_time >= EXPEDITION_ENTRY_SETTLE_SECONDS
                 ):
-                    # Level-triggered every tick, not edge-triggered on hub-exit: a pending drop needs
-                    # both "in an Expedition" and "not mid-flight" (live-tested, see game_data.py) to
-                    # land. Safe to retry: _delivered_weapon_keys/_delivered_talisman_keys dedupe.
-                    animation = (
-                        self.reader.read_current_animation(self._worldchrman_slot)
-                        if self._worldchrman_slot is not None else None
-                    )
-                    if animation is not None and not is_flying_animation(animation):
-                        if self.randomize_weapons:
-                            await self._deliver_pending_weapons()
-                        if self.randomize_talismans:
-                            await self._deliver_pending_talismans()
+                    if self._current_run_is_locked():
+                        # Don't spend an earned weapon/talisman drop on a run that's on a
+                        # not-yet-unlocked boss/character - _handle_win would refuse to send a check
+                        # for this same run's win (locked_boss_win_skipped/
+                        # locked_character_win_skipped), so delivering here would just burn the item
+                        # for nothing. Left pending, not lost: _delivered_weapon_keys/
+                        # _delivered_talisman_keys never gets marked, so the same item is retried on
+                        # a later, unlocked run. Warned once per run, not every tick, to avoid log
+                        # spam for the run's full remaining duration.
+                        if not self._locked_run_drop_withheld_warned:
+                            self._locked_run_drop_withheld_warned = True
+                            logger.info(
+                                "Withholding weapon/talisman drops this run - the current boss "
+                                "and/or character isn't unlocked for this slot yet."
+                            )
+                    else:
+                        # Level-triggered every tick, not edge-triggered on hub-exit: a pending drop
+                        # needs both "in an Expedition" and "not mid-flight" (live-tested, see
+                        # game_data.py) to land. Safe to retry: _delivered_weapon_keys/
+                        # _delivered_talisman_keys dedupe.
+                        animation = (
+                            self.reader.read_current_animation(self._worldchrman_slot)
+                            if self._worldchrman_slot is not None else None
+                        )
+                        if animation is not None and not is_flying_animation(animation):
+                            if self.randomize_weapons:
+                                await self._deliver_pending_weapons()
+                            if self.randomize_talismans:
+                                await self._deliver_pending_talismans()
 
                 if self.overlay is not None:
                     locked_bosses = []
@@ -826,6 +893,26 @@ class NightreignContext(CommonContext):
                 "raw_boss_id": boss.raw,
                 "status": boss.status,
                 "message": message,
+            })
+            return
+
+        if (self.gate_boss_access and f"{boss.name} Access" not in self._owned_item_names()):
+            # Not just defense-in-depth: the 6 secondary bosses share EventFlag 110
+            # (game_data.EVENT_FLAG_SECONDARY_BOSSES), so receiving any one of their Access items
+            # makes the game's own UI select-able for all 6, including ones this slot hasn't
+            # actually received yet (e.g. only "Augur Access" received unlocks Fissure in the Fog,
+            # Sentient Pest, etc. too, in-game). This check is keyed on the specific Nightlord's own
+            # Access item, not the shared flag, so a win against one of those still-unowned 5 is
+            # correctly skipped here even though the game let the player queue into it.
+            logger.info(
+                "Win detected against %s, but this slot hasn't received %s's Access item yet - "
+                "not sending.", boss.name, boss.name,
+            )
+            self._append_event({
+                "timestamp": timestamp,
+                "type": "locked_boss_win_skipped",
+                "character": character_name,
+                "boss": boss.name,
             })
             return
 

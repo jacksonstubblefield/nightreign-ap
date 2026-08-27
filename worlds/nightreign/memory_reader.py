@@ -71,6 +71,15 @@ except ImportError:
 
 PROCESS_NAME = "nightreign.exe"
 
+# Module name(s) EasyAntiCheat injects into the game process once it's launched through Steam's
+# protected-game launcher (start_protected_game.exe) rather than nightreign.exe directly - this is
+# the standard EOS/EAC SDK module name also seen in other FromSoftware EAC titles (e.g. Elden
+# Ring's eldenring.exe), not yet live-confirmed against a Steam-launched (protected) nightreign.exe
+# specifically - if a real detection ever slips through, check what actually loaded and add its
+# name here. Checked before anything else touches the process (see connect()): reading/writing
+# memory at all while this is loaded risks a ban, per docs/setup_en.md's Anti-Cheat section.
+EAC_MODULE_NAMES = ("EasyAntiCheat_x64.dll", "EasyAntiCheat.dll")
+
 # From the CE table's "Baza" pointer registry. Both are the x64 `mov reg, [rip+disp32]` shape:
 # the pointer *slot* address is `match_addr + 7 + signed_disp32`, and that slot holds the live
 # object address - re-read it on every access rather than caching, it can go null mid-transition.
@@ -197,6 +206,13 @@ class PointerNotFoundError(RuntimeError):
     """Raised when an AOB pattern can't be found - build/version likely changed."""
 
 
+class EACDetectedError(RuntimeError):
+    """Raised when EasyAntiCheat is loaded in the target process. The caller must not read or
+    write game memory at all in this case - not just skip the write path, as gate_boss_access's
+    writer does for PointerNotFoundError - so this is deliberately a separate exception type the
+    caller can distinguish from a build/version mismatch."""
+
+
 class NightreignMemoryReader:
     """Attaches to a running nightreign.exe and exposes read-only state.
 
@@ -221,19 +237,36 @@ class NightreignMemoryReader:
         """
         return self.pm is not None
 
+    def _detect_eac_module(self, pm: pymem.Pymem) -> Optional[str]:
+        """Returns the loaded EAC module's name if EasyAntiCheat is injected into the process,
+        else None. See EAC_MODULE_NAMES's comment for what this does and doesn't cover."""
+        for name in EAC_MODULE_NAMES:
+            if pymem.process.module_from_name(pm.process_handle, name) is not None:
+                return name
+        return None
+
     def connect(self) -> bool:
         """Attach to the game process and resolve pointer slots.
 
         Returns True on success. Returns False if the process isn't running
         (a normal, expected state pre-launch - not an error). Raises
-        PointerNotFoundError if the process is running but the known AOB
-        patterns don't match, which most likely means the game updated and
-        the offsets need to be re-derived.
+        EACDetectedError if EasyAntiCheat is loaded in the process - the caller must treat this
+        as fatal, not retry-with-backoff like PointerNotFoundError below, since nothing about this
+        client's read/write behavior is safe to run while that's true. Raises PointerNotFoundError
+        if the process is running but the known AOB patterns don't match, which most likely means
+        the game updated and the offsets need to be re-derived.
         """
         try:
             pm = pymem.Pymem(self.process_name)
         except pymem.exception.ProcessNotFound:
             return False
+
+        eac_module = self._detect_eac_module(pm)
+        if eac_module is not None:
+            raise EACDetectedError(
+                f"EasyAntiCheat is loaded in {self.process_name} ({eac_module}). Launch the game "
+                "offline with Anti-Cheat disabled before using this client - see docs/setup_en.md."
+            )
 
         try:
             self._gameman_slot = self._resolve_pointer_slot(pm, GAMEMAN_AOB)
@@ -477,6 +510,9 @@ def _main():
                 print("Connected.")
             else:
                 time.sleep(1)
+        except EACDetectedError as exc:
+            print(f"Fatal: {exc}")
+            return
         except PointerNotFoundError as exc:
             print(f"Fatal: {exc}")
             return
@@ -491,6 +527,9 @@ def _main():
                         print("Reconnected.")
                     else:
                         time.sleep(1)
+                except EACDetectedError as exc:
+                    print(f"Fatal: {exc}")
+                    return
                 except PointerNotFoundError as exc:
                     print(f"Fatal: {exc}")
                     return

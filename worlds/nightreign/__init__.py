@@ -282,24 +282,18 @@ class NightreignWorld(World):
         self.multiworld.itempool += [self.create_item(name) for name in access_names]
         self.multiworld.itempool += [self.create_item(name) for name in character_access_names]
 
-        # access_names is always <= active_locations: location count is
-        # |included_characters| * |included_nightlords|, at least |included_nightlords|
-        # (and therefore at least len(access_names)) whenever it's non-empty. character_access_names
-        # has no equivalent guarantee - in "boss" mode active_locations is bounded only by
-        # |included_nightlords|, independent of |included_characters|, so a slot could ask for more
-        # Character Access items than there are locations to hold them (e.g. many included
-        # characters but a single included Nightlord). Guard explicitly rather than let
-        # itempool/location counts silently desync.
+        # character_access_names has no guarantee of fitting active_locations the way access_names
+        # does: "boss" mode's location count tracks included_nightlords only, not
+        # included_characters, so this can genuinely run out of room. Structural limit, not a bug.
         total_progression = len(access_names) + len(character_access_names)
         if total_progression > len(self.active_locations):
             raise OptionError(
-                f"{self.player_name}: gate_boss_access/gate_character_access together need "
-                f"{total_progression} progression item slots, but only "
-                f"{len(self.active_locations)} locations are generated with the current "
-                "bosses_with_characters/included_characters/included_nightlords settings - not "
-                "enough room to place them. Include more characters/Nightlords, switch "
-                "bosses_with_characters to boss_and_character, or disable one of the gating "
-                "options."
+                f"{self.player_name}: needs {total_progression} progression items "
+                f"({len(access_names)} boss + {len(character_access_names)} character) but only "
+                f"{len(self.active_locations)} locations exist with these settings. "
+                "bosses_with_characters=boss only makes one location per Nightlord, not per "
+                "character - switch to boss_and_character, reduce included_characters/"
+                "included_nightlords, or disable gate_boss_access/gate_character_access."
             )
 
         filler_count = len(self.active_locations) - total_progression

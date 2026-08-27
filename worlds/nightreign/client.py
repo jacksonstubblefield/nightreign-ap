@@ -730,16 +730,17 @@ class NightreignContext(CommonContext):
                             await self._deliver_pending_talismans()
 
                 if self.overlay is not None:
-                    locked_names = []
+                    locked_bosses = []
+                    locked_characters = []
                     if self.gate_boss_access or self.gate_character_access:
                         owned_names = self._owned_item_names()
                         if self.gate_boss_access:
-                            locked_names += [
+                            locked_bosses = [
                                 name for name in ACCESS_NIGHTLORDS
                                 if f"{name} Access" not in owned_names
                             ]
                         if self.gate_character_access:
-                            locked_names += [
+                            locked_characters = [
                                 name for name in ACCESS_CHARACTERS
                                 if f"{name} Character Access" not in owned_names
                             ]
@@ -768,18 +769,20 @@ class NightreignContext(CommonContext):
                     # can restart under a new pid without the overlay being torn down/rebuilt
                     # (see the `self.overlay is None` guard), or it'd hunt a dead process forever.
                     self.overlay.state.update(
-                        bool(in_hub), locked_names, self.reader.pm.process_id,
+                        bool(in_hub), locked_bosses, locked_characters, self.reader.pm.process_id,
                         boss_raw, boss_desc, character, everdark, toast_text,
                     )
 
                     # Logged only on change, not every tick, so a log dump explains why the
                     # locked-boss panel was/wasn't visible without spamming 4x/second. The
                     # boss/character panel isn't included - those are expected to hold steady.
-                    state_key = (bool(in_hub), tuple(locked_names))
+                    state_key = (bool(in_hub), tuple(locked_bosses), tuple(locked_characters))
                     if state_key != self._last_overlay_state:
                         self._last_overlay_state = state_key
-                        logger.info("Overlay state changed: in_hub=%s locked=%s", bool(in_hub),
-                                    locked_names)
+                        logger.info(
+                            "Overlay state changed: in_hub=%s locked_bosses=%s locked_characters=%s",
+                            bool(in_hub), locked_bosses, locked_characters,
+                        )
             except Exception:
                 logger.exception("Error in Nightreign poll loop")
             await asyncio.sleep(POLL_INTERVAL)

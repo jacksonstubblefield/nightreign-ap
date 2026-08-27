@@ -98,7 +98,7 @@ class OverlayState:
     pid is included here (not just set once at construction) because the game process can restart
     mid-session - the reader reconnects to a new pid, but client.py never tears down/rebuilds an
     already-running overlay (see the `self.overlay is None` guard in poll_loop). Refreshing pid on
-    every tick, the same way visible/locked_names already are, means the overlay keeps following
+    every tick, the same way visible/locked_bosses/locked_characters already are, means the overlay keeps following
     whatever process is actually live instead of silently hunting for a dead one forever.
 
     Also carries the boss/character debug reads (boss_raw/boss_desc/character/everdark) for the
@@ -110,7 +110,8 @@ class OverlayState:
     def __init__(self, pid: int):
         self._lock = threading.Lock()
         self._visible = False
-        self._locked_names: list[str] = []
+        self._locked_bosses: list[str] = []
+        self._locked_characters: list[str] = []
         self._pid = pid
         self._boss_raw: Optional[int] = None
         self._boss_desc: Optional[str] = None
@@ -121,7 +122,8 @@ class OverlayState:
     def update(
         self,
         visible: bool,
-        locked_names: list[str],
+        locked_bosses: list[str],
+        locked_characters: list[str],
         pid: int,
         boss_raw: Optional[int],
         boss_desc: Optional[str],
@@ -131,7 +133,8 @@ class OverlayState:
     ) -> None:
         with self._lock:
             self._visible = visible
-            self._locked_names = list(locked_names)
+            self._locked_bosses = list(locked_bosses)
+            self._locked_characters = list(locked_characters)
             self._pid = pid
             self._boss_raw = boss_raw
             self._boss_desc = boss_desc
@@ -141,12 +144,13 @@ class OverlayState:
 
     def snapshot(
         self,
-    ) -> tuple[bool, list[str], int, Optional[int], Optional[str], Optional[str], Optional[bool],
-               Optional[str]]:
+    ) -> tuple[bool, list[str], list[str], int, Optional[int], Optional[str], Optional[str],
+               Optional[bool], Optional[str]]:
         with self._lock:
             return (
                 self._visible,
-                list(self._locked_names),
+                list(self._locked_bosses),
+                list(self._locked_characters),
                 self._pid,
                 self._boss_raw,
                 self._boss_desc,
@@ -166,6 +170,13 @@ class NightreignOverlay:
     _BG = "#0a0a0a"  # chroma-keyed transparent background - anything drawn stays opaque
     _PANEL_WIDTH = 280
     _PANEL_HEIGHT = 220
+    # Locked bosses and locked characters render as two side-by-side columns in one panel
+    # (rather than two separate windows, unlike the debug/toast panels - they're two facets of
+    # the same "what's still locked" concept, so splitting them into independently-positioned
+    # windows would just make them harder to read together), so this panel needs to be wider
+    # than a single-column one.
+    _LOCKED_PANEL_WIDTH = 440
+    _LOCKED_PANEL_HEIGHT = 240
     _TOAST_WIDTH = 280
     _TOAST_HEIGHT = 40
     _INSET = 20
@@ -190,18 +201,25 @@ class NightreignOverlay:
         root.attributes("-topmost", True)
         root.configure(bg=self._BG)
         root.attributes("-transparentcolor", self._BG)
-        root.geometry(f"{self._PANEL_WIDTH}x{self._PANEL_HEIGHT}+40+40")
+        root.geometry(f"{self._LOCKED_PANEL_WIDTH}x{self._LOCKED_PANEL_HEIGHT}+40+40")
 
-        label = tk.Label(
-            root,
-            text="",
+        # Two columns (bosses, characters) side by side in one frame, rather than one label
+        # with manually aligned text - a proportional font can't align two lists into columns
+        # by padding with spaces the way a monospace font could.
+        columns = tk.Frame(root, bg=self._BG)
+        columns.pack(fill="both", expand=True, padx=8, pady=8)
+
+        label_kwargs = dict(
             fg="#ff5f5f",
             bg=self._BG,
             font=("Segoe UI", 11, "bold"),
             justify="left",
             anchor="nw",
         )
-        label.pack(fill="both", expand=True, padx=8, pady=8)
+        bosses_label = tk.Label(columns, text="", **label_kwargs)
+        bosses_label.grid(row=0, column=0, sticky="nw", padx=(0, 20))
+        characters_label = tk.Label(columns, text="", **label_kwargs)
+        characters_label.grid(row=0, column=1, sticky="nw")
 
         self._make_click_through(root)
 
@@ -249,7 +267,7 @@ class NightreignOverlay:
 
         self._make_click_through(toast_root)
 
-        self._tick(label, debug_label, toast_label)
+        self._tick(bosses_label, characters_label, debug_label, toast_label)
         root.mainloop()
 
     def _make_click_through(self, root: tk.Misc) -> None:
@@ -275,16 +293,25 @@ class NightreignOverlay:
             f"character: {character or 'unknown'}"
         )
 
-    def _tick(self, label: tk.Label, debug_label: tk.Label, toast_label: tk.Label) -> None:
-        (visible, locked_names, pid, boss_raw, boss_desc, character, everdark,
-         toast_text) = self.state.snapshot()
+    @staticmethod
+    def _locked_column_text(header: str, names: list[str]) -> str:
+        if not names:
+            return ""
+        return header + "\n" + "\n".join(f"- {n}" for n in names)
+
+    def _tick(
+        self, bosses_label: tk.Label, characters_label: tk.Label, debug_label: tk.Label,
+        toast_label: tk.Label,
+    ) -> None:
+        (visible, locked_bosses, locked_characters, pid, boss_raw, boss_desc, character,
+         everdark, toast_text) = self.state.snapshot()
         game_hwnd = _find_window_for_pid(pid)
         # WS_EX_TOPMOST floats above every window system-wide, not just the game - without this
         # check the panel would sit on top of the desktop, browser, IDE, etc. Only show it while
         # the game is the foreground window, same as Discord's/Steam's overlays.
         is_game_foreground = game_hwnd is not None and user32.GetForegroundWindow() == game_hwnd
 
-        show_locked = visible and locked_names and is_game_foreground
+        show_locked = visible and (locked_bosses or locked_characters) and is_game_foreground
         # Shown in both the hub and an Expedition (not gated on run state) - see the module
         # docstring for why.
         show_debug = is_game_foreground
@@ -292,8 +319,16 @@ class NightreignOverlay:
 
         if show_locked:
             self._root.deiconify()
-            label.configure(text="Locked (not yet unlocked):\n" + "\n".join(f"- {n}" for n in locked_names))
-            self._reposition(self._root, game_hwnd, self._PANEL_WIDTH, self._PANEL_HEIGHT, corner="top-right")
+            bosses_label.configure(
+                text=self._locked_column_text("Bosses (not yet unlocked):", locked_bosses)
+            )
+            characters_label.configure(
+                text=self._locked_column_text("Characters (not yet unlocked):", locked_characters)
+            )
+            self._reposition(
+                self._root, game_hwnd, self._LOCKED_PANEL_WIDTH, self._LOCKED_PANEL_HEIGHT,
+                corner="top-right",
+            )
         else:
             self._root.withdraw()
 
@@ -313,7 +348,7 @@ class NightreignOverlay:
         else:
             self._toast_root.withdraw()
 
-        self._root.after(250, self._tick, label, debug_label, toast_label)
+        self._root.after(250, self._tick, bosses_label, characters_label, debug_label, toast_label)
 
     @staticmethod
     def _reposition(window: tk.Misc, game_hwnd: int, panel_width: int, panel_height: int, corner: str) -> None:

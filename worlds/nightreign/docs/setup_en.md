@@ -26,7 +26,7 @@ Cheat only runs during an online session, so playing offline is what makes runni
 first place, and is required every time you play with this client, not just a one-time setup step.
 
 ## Turning off Anti-Cheat
-This can't be run with Anti-Cheat because it modifies the game's memory. There's a guide on how to disable Anti-Cheat [here](https://www.nexusmods.com/eldenringnightreign/mods/5).
+This can't be run with Anti-Cheat because it modifies the game's memory. If you run this with EAC enabled and while online, the Nightreign client will instantly close itself.
 
 ## Other Mods
 Play with other mods at your own risk - given how early access this is, this should be compatible with mods.

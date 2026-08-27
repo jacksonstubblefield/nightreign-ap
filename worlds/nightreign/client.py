@@ -693,14 +693,28 @@ class NightreignContext(CommonContext):
                         # Unlike PointerNotFoundError below, this isn't retry-with-backoff: nothing
                         # about this client's read/write behavior is safe to run while EAC is
                         # loaded, so the whole client - not just the memory-polling task - has to
-                        # stop. exit_event is the same mechanism CommonClient's own GUI exit button
-                        # uses; setting it makes main()'s `await ctx.exit_event.wait()` return and
-                        # run the normal graceful ctx.shutdown() (closes the server connection, GUI,
-                        # etc.) before the process exits.
-                        logger.error(
-                            "EasyAntiCheat detected - %s Shutting down; relaunch the game offline "
-                            "with Anti-Cheat disabled, then restart this client.", e
+                        # stop.
+                        message = (
+                            f"EasyAntiCheat detected - {e} Shutting down; relaunch the game "
+                            "offline with Anti-Cheat disabled, then restart this client."
                         )
+                        logger.error(message)
+                        # logger ("NightreignClient") isn't one of NightreignManager's
+                        # logging_pairs, so on its own this would never reach the GUI's visible
+                        # "Archipelago" tab (only console/file output) - this is the one message
+                        # in this file that must not be missed, so also log it via "Client", the
+                        # logger that tab actually follows.
+                        logging.getLogger("Client").error(message)
+                        # Mirrors CommonClient.py's own _cmd_exit ("/exit") exactly: exit_event
+                        # alone only unblocks main()'s `await ctx.exit_event.wait()` - nothing
+                        # in kvui.py watches exit_event to stop the GUI itself (it's set FROM
+                        # GameManager.on_stop, not consumed by it), so without also calling
+                        # ui.stop() here, ctx.shutdown()'s `await self.ui_task` blocks forever on a
+                        # Kivy app nothing ever told to close, and the client (and this warning)
+                        # never actually goes away - live-confirmed: the GUI kept running and
+                        # connected to the server normally after this branch logged and returned.
+                        if self.ui:
+                            self.ui.stop()
                         self.exit_event.set()
                         return
                     except PointerNotFoundError as e:

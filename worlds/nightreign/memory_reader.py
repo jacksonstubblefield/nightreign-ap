@@ -71,14 +71,19 @@ except ImportError:
 
 PROCESS_NAME = "nightreign.exe"
 
-# Module name(s) EasyAntiCheat injects into the game process once it's launched through Steam's
-# protected-game launcher (start_protected_game.exe) rather than nightreign.exe directly - this is
-# the standard EOS/EAC SDK module name also seen in other FromSoftware EAC titles (e.g. Elden
-# Ring's eldenring.exe), not yet live-confirmed against a Steam-launched (protected) nightreign.exe
-# specifically - if a real detection ever slips through, check what actually loaded and add its
-# name here. Checked before anything else touches the process (see connect()): reading/writing
-# memory at all while this is loaded risks a ban, per docs/setup_en.md's Anti-Cheat section.
-EAC_MODULE_NAMES = ("EasyAntiCheat_x64.dll", "EasyAntiCheat.dll")
+# Sibling process EAC spawns when the game is launched through Steam's protected-game launcher
+# (start_protected_game.exe) - live-confirmed while nightreign.exe was running online-protected:
+# a separate process "EasyAntiCheat_EOS.exe"
+# (C:\Program Files (x86)\EasyAntiCheat_EOS\EasyAntiCheat_EOS.exe), its own PID, not a child of
+# nightreign.exe. This is NOT a module injected into nightreign.exe's own process - an earlier
+# version of this check looked for exactly that, but live-testing showed nightreign.exe's module
+# list reads back as empty from another process while it's EAC-protected (its anti-tamper blocks
+# external module enumeration), so that approach silently found nothing and let the client through
+# instead of catching it. Checked via an unprivileged system-wide process scan
+# (list_processes()/CreateToolhelp32Snapshot, the same API process_from_name() below uses) *before*
+# ever opening a handle to nightreign.exe - see connect() - so nothing about this check touches the
+# protected process at all.
+EAC_PROCESS_NAMES = ("EasyAntiCheat_EOS.exe",)
 
 # From the CE table's "Baza" pointer registry. Both are the x64 `mov reg, [rip+disp32]` shape:
 # the pointer *slot* address is `match_addr + 7 + signed_disp32`, and that slot holds the live
@@ -237,11 +242,11 @@ class NightreignMemoryReader:
         """
         return self.pm is not None
 
-    def _detect_eac_module(self, pm: pymem.Pymem) -> Optional[str]:
-        """Returns the loaded EAC module's name if EasyAntiCheat is injected into the process,
-        else None. See EAC_MODULE_NAMES's comment for what this does and doesn't cover."""
-        for name in EAC_MODULE_NAMES:
-            if pymem.process.module_from_name(pm.process_handle, name) is not None:
+    def _detect_eac_process(self) -> Optional[str]:
+        """Returns the name of the running EAC sibling process if present, else None. Doesn't
+        touch nightreign.exe itself in any way - see EAC_PROCESS_NAMES's comment for why."""
+        for name in EAC_PROCESS_NAMES:
+            if pymem.process.process_from_name(name, exact_match=True) is not None:
                 return name
         return None
 
@@ -250,23 +255,25 @@ class NightreignMemoryReader:
 
         Returns True on success. Returns False if the process isn't running
         (a normal, expected state pre-launch - not an error). Raises
-        EACDetectedError if EasyAntiCheat is loaded in the process - the caller must treat this
-        as fatal, not retry-with-backoff like PointerNotFoundError below, since nothing about this
-        client's read/write behavior is safe to run while that's true. Raises PointerNotFoundError
-        if the process is running but the known AOB patterns don't match, which most likely means
-        the game updated and the offsets need to be re-derived.
+        EACDetectedError if EasyAntiCheat's sibling process is running - the caller must treat
+        this as fatal, not retry-with-backoff like PointerNotFoundError below, since nothing about
+        this client's read/write behavior is safe to run while that's true. Checked first, before
+        nightreign.exe's own process handle is even opened. Raises PointerNotFoundError if the
+        process is running but the known AOB patterns don't match, which most likely means the
+        game updated and the offsets need to be re-derived.
         """
+        eac_process = self._detect_eac_process()
+        if eac_process is not None:
+            raise EACDetectedError(
+                f"EasyAntiCheat is running ({eac_process}) - the game was launched through "
+                "Steam's protected launcher. Launch it offline with Anti-Cheat disabled before "
+                "using this client - see docs/setup_en.md."
+            )
+
         try:
             pm = pymem.Pymem(self.process_name)
         except pymem.exception.ProcessNotFound:
             return False
-
-        eac_module = self._detect_eac_module(pm)
-        if eac_module is not None:
-            raise EACDetectedError(
-                f"EasyAntiCheat is loaded in {self.process_name} ({eac_module}). Launch the game "
-                "offline with Anti-Cheat disabled before using this client - see docs/setup_en.md."
-            )
 
         try:
             self._gameman_slot = self._resolve_pointer_slot(pm, GAMEMAN_AOB)

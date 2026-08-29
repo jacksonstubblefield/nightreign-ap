@@ -80,10 +80,10 @@ EVENT_FLAG_NIGHT_ASPECT = 115
 
 # Event flags for ACCESS_NIGHTLORDS. Balancers/Dreglord are deliberately absent here - no working
 # EventFlag was found for either (see KNOWN_BOSS_IDS's comment), so gate_boss_access has nothing to
-# fire for their Access items and can't make them selectable in-game on its own today. A
-# global menu-unlock patch (memory_reader.ACCESS_ALL_BOSSES_AOB / memory_writer's
-# set_all_bosses_unlocked) exists and was live-confirmed to work for this, but isn't wired into
-# client.py/Options.py as a real option yet - planned follow-up.
+# fire for their Access items and can't make them selectable in-game on its own. The
+# unlock_all_bosses_in_game option (Options.py/client.py) is the real answer for these two - it
+# patches the Expeditions menu's own selectability check directly (memory_reader.ACCESS_ALL_BOSSES_AOB
+# / memory_writer's set_all_bosses_unlocked), independent of the EventFlag system entirely.
 ACCESS_ITEM_EVENT_FLAGS = {
     f"{name} Access": (EVENT_FLAG_NIGHT_ASPECT if name == "Night Aspect"
                        else EVENT_FLAG_SECONDARY_BOSSES)

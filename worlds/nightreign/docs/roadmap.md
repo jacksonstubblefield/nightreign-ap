@@ -3,7 +3,6 @@
 Ideas on the radar for future releases, in no particular order. Nothing here is scheduled or
 promised — this is a running list of what's being considered/investigated, not a commitment.
 
-- **DLC support** — DLC support
 - **Weaponsanity** — an idea that winning a run with each weapon is a check
 - **Relic drops** — receive relics as items.
 - **Shop checks** — send a check for buying something from the small jar bazaar

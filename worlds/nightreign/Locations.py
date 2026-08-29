@@ -46,7 +46,8 @@ def location_name_boss_only(nightlord: str) -> str:
 
 
 def location_name_everdark(character: str, nightlord: str) -> str:
-    """Generates location names for the enable_everdark_checks option in BossWithCharacter mode.
+    """Generates location names for an Everdark Sovereign included via IncludedNightlords, in
+    BossWithCharacter mode.
 
     Args:
         character (str): Nightreign character name
@@ -59,7 +60,8 @@ def location_name_everdark(character: str, nightlord: str) -> str:
 
 
 def location_name_everdark_boss_only(nightlord: str) -> str:
-    """Generates location names for the enable_everdark_checks option in Boss mode.
+    """Generates location names for an Everdark Sovereign included via IncludedNightlords, in
+    Boss mode.
 
     Args:
         nightlord (str): Nightlord name (must have an Everdark form - see EVERDARK_NIGHTLORDS)

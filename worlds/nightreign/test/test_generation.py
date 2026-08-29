@@ -13,7 +13,13 @@ branches on.
 
 from Options import OptionError
 from test.bases import WorldTestBase
-from worlds.nightreign.game_data import CHARACTERS, EVERDARK_NIGHTLORDS, NIGHTLORDS
+from worlds.nightreign.game_data import (ALL_NIGHTLORD_ENTRIES, CHARACTERS, EVERDARK_NIGHTLORDS,
+                                          NIGHTLORDS)
+
+# All base Nightlords plus every Everdark Sovereign entry (e.g. "Everdark Tricephalos") - used by
+# tests exercising Everdark checks, since IncludedNightlords excludes Everdark entries by default
+# (see Options.py's IncludedNightlords).
+ALL_NIGHTLORDS_WITH_EVERDARK = list(ALL_NIGHTLORD_ENTRIES)
 
 
 class NightreignGateOffTest(WorldTestBase):
@@ -194,7 +200,7 @@ class NightreignGateCharacterNotEnoughRoomTest(WorldTestBase):
             self.world_setup()
 
 
-# --- `enable_everdark_checks` option coverage ---
+# --- Everdark checks via IncludedNightlords' "Everdark X" entries ---
 # Everdark locations get the same access_rule gating as normal ones (see create_regions()), so
 # test_fill (via WorldTestBase's default auto_construct) already re-exercises the softlock
 # invariant this file exists for, now with Everdark locations mixed in - including combined with
@@ -202,7 +208,7 @@ class NightreignGateCharacterNotEnoughRoomTest(WorldTestBase):
 
 class NightreignEverdarkBossTest(WorldTestBase):
     game = "Elden Ring Nightreign"
-    options = {"enable_everdark_checks": True}
+    options = {"included_nightlords": ALL_NIGHTLORDS_WITH_EVERDARK}
 
     def test_adds_one_everdark_location_per_everdark_nightlord(self) -> None:
         locations = self.multiworld.get_locations(self.world.player)
@@ -213,7 +219,10 @@ class NightreignEverdarkBossTest(WorldTestBase):
 
 class NightreignEverdarkBossAndCharacterTest(WorldTestBase):
     game = "Elden Ring Nightreign"
-    options = {"enable_everdark_checks": True, "bosses_with_characters": "boss_and_character"}
+    options = {
+        "included_nightlords": ALL_NIGHTLORDS_WITH_EVERDARK,
+        "bosses_with_characters": "boss_and_character",
+    }
 
     def test_everdark_locations_mirror_bosses_with_characters(self) -> None:
         locations = self.multiworld.get_locations(self.world.player)
@@ -224,7 +233,7 @@ class NightreignEverdarkBossAndCharacterTest(WorldTestBase):
 class NightreignEverdarkWithGateTest(WorldTestBase):
     game = "Elden Ring Nightreign"
     options = {
-        "enable_everdark_checks": True,
+        "included_nightlords": ALL_NIGHTLORDS_WITH_EVERDARK,
         "gate_boss_access": True,
         "bosses_with_characters": "boss_and_character",
         "starting_boss": "fissure_in_the_fog",  # the exact starting_boss the original softlock used
@@ -237,7 +246,7 @@ class NightreignEverdarkWithGateTest(WorldTestBase):
 class NightreignEverdarkNotInGoalGroupsTest(WorldTestBase):
     game = "Elden Ring Nightreign"
     options = {
-        "enable_everdark_checks": True,
+        "included_nightlords": ALL_NIGHTLORDS_WITH_EVERDARK,
         "bosses_with_characters": "boss_and_character",
         "goal": "all_bosses",
     }
@@ -247,6 +256,31 @@ class NightreignEverdarkNotInGoalGroupsTest(WorldTestBase):
         # leaked in, this count would include them too, and some seeds could become unwinnable
         # since Everdark availability isn't guaranteed (see Options.py's disclaimer).
         self.assertEqual(len(self.world.goal_groups), len(CHARACTERS) * len(NIGHTLORDS))
+
+
+class NightreignEverdarkAccessIsSeparateTest(WorldTestBase):
+    game = "Elden Ring Nightreign"
+    options = {
+        "included_nightlords": ALL_NIGHTLORDS_WITH_EVERDARK,
+        "gate_boss_access": True,
+        "starting_boss": "tricephalos",
+    }
+
+    def test_everdark_location_needs_its_own_access_item(self) -> None:
+        # Tricephalos is the starting_boss (freed) - "Defeat Tricephalos" is reachable immediately.
+        self.assertTrue(self.can_reach_location("Defeat Tricephalos"))
+        # Everdark Tricephalos is a separate boss from base Tricephalos - it is NOT freed just
+        # because the base form is, and needs its own "Everdark Tricephalos Access" item.
+        self.assertFalse(self.can_reach_location("Defeat Everdark Tricephalos"))
+        self.collect_by_name("Everdark Tricephalos Access")
+        self.assertTrue(self.can_reach_location("Defeat Everdark Tricephalos"))
+
+    def test_access_items_are_named_distinctly(self) -> None:
+        item_names = {item.name for item in self.multiworld.itempool}
+        self.assertIn("Everdark Tricephalos Access", item_names)
+        # Tricephalos is the freed starting_boss, so its own (non-Everdark) Access item was never
+        # added to the pool at all - the two access items are never conflated with each other.
+        self.assertNotIn("Tricephalos Access", item_names)
 
 
 class NightreignNoFillerSourceTest(WorldTestBase):
@@ -341,3 +375,34 @@ class NightreignGoalRandomTest(WorldTestBase):
             self.assertEqual(len(group), 1)
         all_ids = [location_id for group in self.world.goal_groups for location_id in group]
         self.assertEqual(len(all_ids), len(set(all_ids)))  # no duplicate objectives
+
+
+class NightreignStartingBossEverdarkTest(WorldTestBase):
+    game = "Elden Ring Nightreign"
+    options = {
+        "starting_boss": "everdark_tricephalos",
+        "included_nightlords": ALL_NIGHTLORDS_WITH_EVERDARK,
+    }
+
+    def test_starting_boss_resolves_to_base_nightlord_name(self) -> None:
+        self.assertEqual(self.world.starting_boss, "Tricephalos")
+        self.assertTrue(self.world.starting_boss_everdark)
+
+    def test_everdark_starting_boss_frees_only_the_everdark_form(self) -> None:
+        # The base Nightlord (Tricephalos) is a separate boss from Everdark Tricephalos and stays
+        # gated - only "Everdark Tricephalos Access" is freed.
+        self.assertEqual(self.world.freed_nightlords, set())
+        self.assertEqual(self.world.freed_everdark_nightlords, {"Tricephalos"})
+
+
+class NightreignStartingBossEverdarkWithoutChecksTest(WorldTestBase):
+    game = "Elden Ring Nightreign"
+    auto_construct = False
+    options = {
+        "starting_boss": "everdark_tricephalos",
+        # default included_nightlords has no "Everdark X" entries at all.
+    }
+
+    def test_everdark_starting_boss_requires_everdark_entry_in_included_nightlords(self) -> None:
+        with self.assertRaises(OptionError):
+            self.world_setup()

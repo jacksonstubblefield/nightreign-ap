@@ -121,6 +121,26 @@ class NightreignMemoryWriter:
         self.pm.start_thread(self._trampoline_addr, params=self._param_addr)
         return True
 
+    def set_all_bosses_unlocked(self, jz_addr: int, unlocked: bool) -> bool:
+        """Patches (or restores) the boss-selectability check at `jz_addr` (see
+        memory_reader.py's resolve_all_bosses_unlock_target() / ACCESS_ALL_BOSSES_AOB). Unlike
+        set_event_flag, this never touches AP's own unlock state - it only affects what's
+        selectable in the game's own Expeditions menu. Idempotent (writing bytes that are already
+        there is a harmless no-op), so callers can call this every tick without tracking whether
+        it's already applied - see client.py's poll loop."""
+        target = _ALL_BOSSES_UNLOCKED_BYTES if unlocked else _ALL_BOSSES_LOCKED_BYTES
+        try:
+            self.pm.write_bytes(jz_addr, target, len(target))
+        except (pymem.exception.MemoryWriteError, pymem.exception.WinAPIError):
+            return False
+        return True
+
+
+# Original vs. patched bytes at ACCESS_ALL_BOSSES_JZ_OFFSET - `jz +7` (skip revealing this boss in
+# the menu unless already unlocked) vs two NOPs (always fall through to "revealed").
+_ALL_BOSSES_LOCKED_BYTES = bytes.fromhex("7407")
+_ALL_BOSSES_UNLOCKED_BYTES = bytes.fromhex("9090")
+
 
 # --- Item-drop write primitive (randomized-weapon filler) ---
 # Ported from the CT table's "Sly - ItemDrop" script (contributor Volkov_ilya37) - see
@@ -404,12 +424,20 @@ def _main():
         from memory_reader import NightreignMemoryReader, PointerNotFoundError  # type: ignore[no-redef]
 
     parser = argparse.ArgumentParser(
-        description="Fire a single SetEventFlag call against a running nightreign.exe, for "
-        "manual parity testing against the known-good Cheat Engine behavior."
+        description="Fire a single SetEventFlag call, or toggle the all-bosses-unlocked menu "
+        "patch, against a running nightreign.exe - for manual parity testing against the "
+        "known-good Cheat Engine behavior."
     )
-    parser.add_argument("--flag", type=int, required=True, help="EventFlag id, e.g. 110 or 115")
+    parser.add_argument("--flag", type=int, help="EventFlag id, e.g. 110 or 115")
     parser.add_argument("--on", type=int, choices=(0, 1), default=1, help="0 or 1, default 1")
+    parser.add_argument(
+        "--all-bosses", type=int, choices=(0, 1),
+        help="1 to patch every boss selectable in the Expeditions menu (see "
+        "ACCESS_ALL_BOSSES_AOB), 0 to restore the normal locked-check."
+    )
     args = parser.parse_args()
+    if (args.flag is None) == (args.all_bosses is None):
+        parser.error("pass exactly one of --flag or --all-bosses")
 
     reader = NightreignMemoryReader()
     if not reader.connect():
@@ -424,9 +452,22 @@ def _main():
 
     print(f"EventFlag ptr slot: {ptr_slot:#x}  EventFlagBaseA: {base_a_addr:#x}")
     writer = NightreignMemoryWriter(reader.pm, ptr_slot, base_a_addr)
-    ok = writer.set_event_flag(args.flag, bool(args.on))
-    print(f"SetEventFlag({args.flag}, {args.on}) -> {'dispatched' if ok else 'FAILED (pointer unreadable)'}")
-    print("Check the in-game Expeditions screen to confirm the visual result.")
+
+    if args.flag is not None:
+        ok = writer.set_event_flag(args.flag, bool(args.on))
+        print(f"SetEventFlag({args.flag}, {args.on}) -> "
+              f"{'dispatched' if ok else 'FAILED (pointer unreadable)'}")
+        print("Check the in-game Expeditions screen to confirm the visual result.")
+    else:
+        try:
+            jz_addr = reader.resolve_all_bosses_unlock_target()
+        except PointerNotFoundError as exc:
+            print(f"Fatal: {exc}")
+            return
+        ok = writer.set_all_bosses_unlocked(jz_addr, bool(args.all_bosses))
+        print(f"set_all_bosses_unlocked({bool(args.all_bosses)}) @ {jz_addr:#x} -> "
+              f"{'ok' if ok else 'FAILED (write error)'}")
+        print("Check the in-game Expeditions screen to confirm the visual result.")
 
 
 if __name__ == "__main__":

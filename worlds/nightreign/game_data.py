@@ -17,7 +17,11 @@ CHARACTER_CLASS_NAMES = {
 CHARACTERS = list(CHARACTER_CLASS_NAMES.values())
 
 # Nightlord ID
-# DLC not yet mapped because I don't understand unlock event flagging yet
+# DLC bosses (The Forsaken Hollows) live-verified 2026-08-29 by launching each expedition with the
+# ACCESS_ALL_BOSSES_AOB menu patch active (see memory_reader.py) and reading boss_id once loaded
+# in: Balancers=1080, Dreglord=1090. Unlike the base 8, no working EventFlag-based unlock was found
+# for either despite testing several candidates (117, 6950-6952, and 110+117 together) - see
+# ACCESS_ITEM_EVENT_FLAGS below for how that gap is handled.
 KNOWN_BOSS_IDS = {
     2: "Tricephalos",
     12: "Gaping Jaw",
@@ -28,6 +32,8 @@ KNOWN_BOSS_IDS = {
     53: "Darkdrift Night",
     61: "Fissure in the Fog",
     73: "Night Aspect",
+    1080: "Balancers",
+    1090: "Dreglord",
 }
 # Checks Nightlord ID +/- 3 given variance seen in testing
 DRIFT_TOLERANCE = 3
@@ -54,25 +60,50 @@ NIGHTLORDS = nightlord_roster()
 # Nightlords that do not start unlocked (minus DLC)
 ACCESS_NIGHTLORDS = list(NIGHTLORDS)
 
-# Nightlords with an Everdark Sovereign variant - all of them except Night Aspect, the campaign
-# finale, which has no Everdark form. See memory_reader.py's read_everdark_flag() for detection.
-EVERDARK_NIGHTLORDS = [name for name in NIGHTLORDS if name != "Night Aspect"]
+# Nightlords with an Everdark Sovereign variant - all of them except each campaign's finale boss
+# (Night Aspect for the base game, Dreglord for the DLC), which has no Everdark form. Live-verified
+# 2026-08-29 for Dreglord: its expedition entry has no Everdark option in the menu, while Balancers
+# does (same boss_id, everdark=True - see memory_reader.py's read_everdark_flag()).
+EVERDARK_NIGHTLORDS = [name for name in NIGHTLORDS if name not in ("Night Aspect", "Dreglord")]
+
+# Everdark Sovereigns as their own separate, individually includable entries (e.g. "Everdark
+# Tricephalos") - since they're entirely separate bosses from their base Nightlord (own checks, own
+# Access item - see Items.py), they're selectable via Options.py's IncludedNightlords the same way
+# base Nightlords are, rather than gated behind one all-or-nothing toggle. ALL_NIGHTLORD_ENTRIES is
+# that option's full valid_keys set.
+EVERDARK_NIGHTLORD_ENTRIES = [f"Everdark {name}" for name in EVERDARK_NIGHTLORDS]
+ALL_NIGHTLORD_ENTRIES = NIGHTLORDS + EVERDARK_NIGHTLORD_ENTRIES
 
 # Known event flags that unlock bosses
 EVENT_FLAG_SECONDARY_BOSSES = 110
 EVENT_FLAG_NIGHT_ASPECT = 115
 
-# Event flags for ACCESS_NIGHTLORDS
+# Event flags for ACCESS_NIGHTLORDS. Balancers/Dreglord are deliberately absent here - no working
+# EventFlag was found for either (see KNOWN_BOSS_IDS's comment), so gate_boss_access has nothing to
+# fire for their Access items and can't make them selectable in-game on its own today. A
+# global menu-unlock patch (memory_reader.ACCESS_ALL_BOSSES_AOB / memory_writer's
+# set_all_bosses_unlocked) exists and was live-confirmed to work for this, but isn't wired into
+# client.py/Options.py as a real option yet - planned follow-up.
 ACCESS_ITEM_EVENT_FLAGS = {
     f"{name} Access": (EVENT_FLAG_NIGHT_ASPECT if name == "Night Aspect"
                        else EVENT_FLAG_SECONDARY_BOSSES)
     for name in ACCESS_NIGHTLORDS
-    if name != "Tricephalos"
+    if name not in ("Tricephalos", "Balancers", "Dreglord")
 }
 
 
 def starting_free_nightlords(starting_boss: str) -> list:
     """List of Nightlords that start unlocked for a given starting boss.
+    """
+    return [starting_boss]
+
+
+def starting_free_everdark_nightlords(starting_boss: str) -> list:
+    """List of Everdark Sovereigns that start unlocked for a given starting boss - only non-empty
+    when starting_boss itself is an Everdark choice (see Options.py's StartingBoss/__init__.py's
+    generate_early()). Everdark Sovereigns are separate bosses from their base Nightlord (own
+    checks, own Access item - see EVERDARK_NIGHTLORDS/Items.py), so choosing e.g.
+    "everdark_tricephalos" as starting_boss frees Everdark Tricephalos only, not base Tricephalos.
     """
     return [starting_boss]
 

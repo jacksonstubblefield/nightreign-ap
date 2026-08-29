@@ -1,10 +1,11 @@
-from BaseClasses import LocationProgressType, Region, Tutorial
+from BaseClasses import Region, Tutorial
 from Options import OptionError
 from worlds.AutoWorld import World, WebWorld
 from worlds.LauncherComponents import Component, Type, components, icon_paths, launch_subprocess
 
 from .game_data import (ACCESS_CHARACTERS, ACCESS_NIGHTLORDS, CHARACTERS, EVERDARK_NIGHTLORDS,
-                        NIGHTLORDS, starting_free_characters, starting_free_nightlords)
+                        NIGHTLORDS, starting_free_characters, starting_free_everdark_nightlords,
+                        starting_free_nightlords)
 from .Items import FILLER_ITEM_NAMES, NightreignItem, item_name_to_id, item_table
 from .Locations import (NightreignLocation, location_name, location_name_boss_only,
                         location_name_everdark, location_name_everdark_boss_only,
@@ -52,10 +53,14 @@ class NightreignWorld(World):
     for playable characters instead of Nightlords - every character other than the chosen
     starting_character is gated behind receiving that character's Character Access item, and with
     bosses_with_characters set to boss_and_character, a win as a not-yet-unlocked character also
-    doesn't send its check. With enable_everdark_checks on, defeating a
-    Nightlord's Everdark Sovereign variant is a separate, optional location - never required for
-    the goal, since Everdark availability depends on an external weekly rotation this world can't
-    unlock or guarantee (see Options.py's disclaimer).
+    doesn't send its check. Each Everdark Sovereign is its own separate entry in
+    included_nightlords (e.g. "Everdark Tricephalos", excluded by default) - defeating one is a
+    separate, optional location, never required for the goal, since Everdark availability depends
+    on an external weekly rotation this world can't unlock or guarantee (see Options.py's
+    IncludedNightlords disclaimer). Everdark Sovereigns are treated as entirely separate bosses
+    from their base Nightlord: with gate_boss_access on, an Everdark location is gated behind its
+    own "Everdark X Access" item, independent of whether the base Nightlord's own Access item has
+    been received.
     """
 
     game = "Elden Ring Nightreign"
@@ -71,8 +76,11 @@ class NightreignWorld(World):
     location_name_to_id = location_name_to_id
 
     active_locations: list[str]
+    everdark_nightlords: list[str]
     starting_boss: str
+    starting_boss_everdark: bool
     freed_nightlords: set
+    freed_everdark_nightlords: set
     starting_character: str
     freed_characters: set
     goal_groups: list[list[int]]
@@ -93,13 +101,45 @@ class NightreignWorld(World):
                 "enabled, since filler items are drawn from those two pools."
             )
 
-        self.starting_boss = NIGHTLORDS[self.options.starting_boss.value]
-        self.freed_nightlords = set(starting_free_nightlords(self.starting_boss))
+        # A starting_boss value >= len(NIGHTLORDS) is one of the everdark_* choices, positionally
+        # mapped over EVERDARK_NIGHTLORDS instead (see Options.py's StartingBoss asserts).
+        # self.starting_boss stays the base Nightlord name either way (used to name the freed
+        # entry), but Everdark Sovereigns are separate bosses from their base Nightlord - own
+        # checks, own Access item (see EVERDARK_NIGHTLORDS/Items.py) - so which set gets freed
+        # below depends on starting_boss_everdark: picking "everdark_tricephalos" frees Everdark
+        # Tricephalos only, leaving base Tricephalos just as gated as any other Nightlord.
+        starting_boss_value = self.options.starting_boss.value
+        self.starting_boss_everdark = starting_boss_value >= len(NIGHTLORDS)
+        self.starting_boss = (
+            EVERDARK_NIGHTLORDS[starting_boss_value - len(NIGHTLORDS)] if self.starting_boss_everdark
+            else NIGHTLORDS[starting_boss_value]
+        )
+        if (self.starting_boss_everdark
+                and f"Everdark {self.starting_boss}" not in self.options.included_nightlords.value):
+            raise OptionError(
+                f"{self.player_name}: starting_boss is an Everdark Sovereign "
+                f"({self.starting_boss}), but \"Everdark {self.starting_boss}\" isn't in "
+                "included_nightlords - there'd be no Everdark check for it to grant free access to."
+            )
+        if self.starting_boss_everdark:
+            self.freed_nightlords = set()
+            self.freed_everdark_nightlords = set(
+                starting_free_everdark_nightlords(self.starting_boss)
+            )
+        else:
+            self.freed_nightlords = set(starting_free_nightlords(self.starting_boss))
+            self.freed_everdark_nightlords = set()
         self.starting_character = CHARACTERS[self.options.starting_character.value]
         self.freed_characters = set(starting_free_characters(self.starting_character))
 
         included_characters = self.options.included_characters.value
-        included_nightlords = self.options.included_nightlords.value
+        # included_nightlords.value may also contain "Everdark X" entries (see
+        # game_data.EVERDARK_NIGHTLORD_ENTRIES/Options.py's IncludedNightlords) - filtered out here
+        # since goal_random_count/the night_aspect check below are both about base Nightlords only
+        # (random_subset samples from create_regions()'s `locations`, never `everdark_locations`).
+        included_nightlords = [
+            nl for nl in self.options.included_nightlords.value if nl in NIGHTLORDS
+        ]
         per_character = self.options.bosses_with_characters == "boss_and_character"
 
         if self.options.goal == "random_subset" and not per_character:
@@ -155,30 +195,34 @@ class NightreignWorld(World):
                 if nightlord in included_nightlords
             ]
 
-        # enable_everdark_checks locations mirror bosses_with_characters exactly like the normal
-        # locations above, but over EVERDARK_NIGHTLORDS (excludes Night Aspect, which has no
-        # Everdark form) and are gated behind the option entirely - empty list when it's off.
-        # Deliberately kept out of goal_groups below (see Options.py's disclaimer): Everdark
-        # Sovereign availability depends on an external weekly rotation this world can't unlock or
-        # guarantee, so requiring one for the goal could make a seed impossible to finish.
+        # Everdark locations mirror bosses_with_characters exactly like the normal locations
+        # above, but over whichever EVERDARK_NIGHTLORDS entries have their own "Everdark X" entry
+        # in included_nightlords (see game_data.EVERDARK_NIGHTLORD_ENTRIES/Options.py's
+        # IncludedNightlords) - each Everdark Sovereign is included independently of its base
+        # Nightlord, empty list when none are selected. Deliberately kept out of goal_groups below
+        # (see Options.py's disclaimer): Everdark Sovereign availability depends on an external
+        # weekly rotation this world can't unlock or guarantee, so requiring one for the goal could
+        # make a seed impossible to finish.
+        self.everdark_nightlords = [
+            nightlord for nightlord in EVERDARK_NIGHTLORDS
+            if f"Everdark {nightlord}" in included_nightlords
+        ]
         everdark_locations = []
-        if self.options.enable_everdark_checks:
-            everdark_nightlords = [nl for nl in included_nightlords if nl in EVERDARK_NIGHTLORDS]
-            if self.options.bosses_with_characters == "boss_and_character":
-                included_characters = self.options.included_characters.value
-                everdark_locations = [
-                    (location_name_everdark(character, nightlord), nightlord, character)
-                    for character in CHARACTERS
-                    if character in included_characters
-                    for nightlord in EVERDARK_NIGHTLORDS
-                    if nightlord in everdark_nightlords
-                ]
-            else:
-                everdark_locations = [
-                    (location_name_everdark_boss_only(nightlord), nightlord, None)
-                    for nightlord in EVERDARK_NIGHTLORDS
-                    if nightlord in everdark_nightlords
-                ]
+        if self.options.bosses_with_characters == "boss_and_character":
+            included_characters = self.options.included_characters.value
+            everdark_locations = [
+                (location_name_everdark(character, nightlord), nightlord, character)
+                for character in CHARACTERS
+                if character in included_characters
+                for nightlord in EVERDARK_NIGHTLORDS
+                if nightlord in self.everdark_nightlords
+            ]
+        else:
+            everdark_locations = [
+                (location_name_everdark_boss_only(nightlord), nightlord, None)
+                for nightlord in EVERDARK_NIGHTLORDS
+                if nightlord in self.everdark_nightlords
+            ]
 
         self.active_locations = [
             name for name, _nightlord, _character in locations + everdark_locations
@@ -216,15 +260,21 @@ class NightreignWorld(World):
             # Without this, the fill algorithm has no idea defeating a Nightlord requires
             # earning it first - it can (and did) place the only route to a Nightlord behind an
             # unreachable location, softlocking the run. gate_boss_access off needs no rule.
-            # Everdark locations reuse the same base Nightlord's Access item - there's no separate
-            # "Everdark X Access" item, since Everdark is a variant fight against the same
-            # Nightlord, not a distinct one. character is only set in boss_and_character mode - in
-            # "boss" mode no location is tied to a specific character, so gate_character_access
-            # there only controls in-game unlocking, never location reachability. Combined via a
-            # small AND-rule when both the Nightlord and the character are gated, the same way AP's
+            # Everdark Sovereigns are treated as entirely separate bosses from their base Nightlord
+            # - own checks, own "Everdark X Access" item, own freed_everdark_nightlords set, keyed
+            # off the same nightlord name but never sharing the base Nightlord's Access item or
+            # freed_nightlords entry. character is only set in boss_and_character mode - in "boss"
+            # mode no location is tied to a specific character, so gate_character_access there only
+            # controls in-game unlocking, never location reachability. Combined via a small
+            # AND-rule when both the Nightlord and the character are gated, the same way AP's
             # access_rule mechanism is meant to be composed.
             rules = []
-            if self.options.gate_boss_access and nightlord not in self.freed_nightlords:
+            if everdark:
+                if self.options.gate_boss_access and nightlord not in self.freed_everdark_nightlords:
+                    rules.append(lambda state, nightlord=nightlord: state.has(
+                        f"Everdark {nightlord} Access", self.player
+                    ))
+            elif self.options.gate_boss_access and nightlord not in self.freed_nightlords:
                 rules.append(lambda state, nightlord=nightlord: state.has(
                     f"{nightlord} Access", self.player
                 ))
@@ -237,16 +287,15 @@ class NightreignWorld(World):
                 location.access_rule = rules[0]
             elif rules:
                 location.access_rule = lambda state, rules=rules: all(rule(state) for rule in rules)
-            if everdark:
-                # EXCLUDED stops the fill algorithm from ever placing a progression/useful item
-                # here (see BaseClasses.Location.can_fill) - keeping Everdark locations out of
-                # goal_groups isn't enough on its own, since AP can still place an Access item
-                # *other* locations depend on into one. A real generated seed did exactly that
-                # (starting_boss=Tricephalos: "Defeat Everdark Tricephalos" held the only copy of
-                # "Sentient Pest Access", the sole route out of the starting Nightlord) - since
-                # Everdark availability is an external, uncertain weekly rotation (see Options.py's
-                # disclaimer), nothing else in the graph may ever depend on reaching one.
-                location.progress_type = LocationProgressType.EXCLUDED
+            # Everdark locations are NOT excluded from progression (unlike an earlier revision of
+            # this feature): now that Everdark Sovereigns are entirely separate bosses with their
+            # own Access item, an Everdark location is just as legitimate a place for AP's fill
+            # algorithm to route progression through as any other - the "might not be reachable
+            # this week" risk is accepted as part of the same onus-on-the-player disclaimer that
+            # already covers Everdark availability in general (see Options.py's
+            # IncludedNightlords). goal_groups still excludes Everdark locations (see below) so
+            # the goal itself is never required to depend on one, but that's a separate concern
+            # from whether one may hold a progression item.
             return location
 
         for name, nightlord, character in locations:
@@ -279,17 +328,31 @@ class NightreignWorld(World):
                 if name in included_characters and name not in self.freed_characters
             ]
 
+        # Everdark Sovereigns are separate bosses from their base Nightlord (own checks, own
+        # Access item), so gate_boss_access needs its own Everdark Access items too - one per
+        # self.everdark_nightlords entry (computed in create_regions() from included_nightlords'
+        # "Everdark X" entries), empty when none are included.
+        everdark_access_names = []
+        if self.options.gate_boss_access:
+            everdark_access_names = [
+                f"Everdark {name} Access" for name in self.everdark_nightlords
+                if name not in self.freed_everdark_nightlords
+            ]
+
         self.multiworld.itempool += [self.create_item(name) for name in access_names]
         self.multiworld.itempool += [self.create_item(name) for name in character_access_names]
+        self.multiworld.itempool += [self.create_item(name) for name in everdark_access_names]
 
-        # character_access_names has no guarantee of fitting active_locations the way access_names
-        # does: "boss" mode's location count tracks included_nightlords only, not
-        # included_characters, so this can genuinely run out of room. Structural limit, not a bug.
-        total_progression = len(access_names) + len(character_access_names)
+        # character_access_names (and, now, everdark_access_names) have no guarantee of fitting
+        # active_locations the way access_names does: "boss" mode's location count tracks
+        # included_nightlords only, not included_characters, so this can genuinely run out of
+        # room. Structural limit, not a bug.
+        total_progression = len(access_names) + len(character_access_names) + len(everdark_access_names)
         if total_progression > len(self.active_locations):
             raise OptionError(
                 f"{self.player_name}: needs {total_progression} progression items "
-                f"({len(access_names)} boss + {len(character_access_names)} character) but only "
+                f"({len(access_names)} boss + {len(character_access_names)} character + "
+                f"{len(everdark_access_names)} Everdark) but only "
                 f"{len(self.active_locations)} locations exist with these settings. "
                 "bosses_with_characters=boss only makes one location per Nightlord, not per "
                 "character - switch to boss_and_character, reduce included_characters/"
@@ -315,10 +378,12 @@ class NightreignWorld(World):
         return {
             "gate_boss_access": bool(self.options.gate_boss_access),
             "gate_character_access": bool(self.options.gate_character_access),
+            "unlock_all_bosses_in_game": bool(self.options.unlock_all_bosses_in_game),
             "receive_weapons": bool(self.options.receive_weapons),
             "receive_talismans": bool(self.options.receive_talismans),
-            "enable_everdark_checks": bool(self.options.enable_everdark_checks),
+            "everdark_nightlords": self.everdark_nightlords,
             "starting_boss": self.starting_boss,
+            "starting_boss_everdark": self.starting_boss_everdark,
             "starting_character": self.starting_character,
             "bosses_with_characters": self.options.bosses_with_characters.current_key,
             "goal": self.options.goal.current_key,

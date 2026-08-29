@@ -97,6 +97,26 @@ GAMEDATAMAN_AOB = "48 8B 0D ?? ?? ?? ?? F3 48 0F 2C C0"
 EVENTFLAG_PTR_AOB = "48 8B 1D ?? ?? ?? ?? 49 8B F0 48 8B F9"
 EVENTFLAG_BASE_A_AOB = "48 89 5C 24 08 44 8B 49 1C 44"
 
+# "Access All Bosses [Expedition Menu]" - live-confirmed 2026-08-29 to reveal every boss in the
+# Expeditions menu, including DLC Nightlords and Everdark Sovereigns, regardless of actual
+# in-game unlock progress. Ported from a CT script entry (contributor "molly"):
+#   [ENABLE]  AccessAllBossesAOB+9: db 90 90
+#   [DISABLE] AccessAllBossesAOB+9: db 74 07
+# `45 84 FF` is `test r15b, r15b` (some per-boss "is this unlocked" boolean, computed elsewhere);
+# `74 07` right after it is `jz +7`, skipping the code that reveals/enables this boss's menu entry
+# when that boolean is false. NOPing it makes every boss always take the "revealed" path. This is
+# purely a game-side selectability patch - it does NOT touch AP's own unlock state (received
+# Access items), which the client still enforces independently before sending any check (see
+# client.py's gate_boss_access guards). Resolved lazily via resolve_all_bosses_unlock_target(),
+# same never-take-down-the-read-only-tracker convention as EVENTFLAG_PTR_AOB/EVENTFLAG_BASE_A_AOB.
+# Deliberately stops one byte short of the `74 07` itself - live-confirmed 2026-08-29 that
+# including the mutable `74` in the scanned pattern breaks re-resolution once the patch is already
+# applied (the byte at that position has since become `90`, so the AOB no longer matches its own
+# already-patched target - a real bug caught by testing resolve_all_bosses_unlock_target() against
+# the live game right after this same patch had been applied via Cheat Engine).
+ACCESS_ALL_BOSSES_AOB = "FF 50 18 49 8B CE 45 84 FF"
+ACCESS_ALL_BOSSES_JZ_OFFSET = 9  # match_addr + this = the `74 07` (jz +7) bytes to patch
+
 # GameMan-relative offsets.
 HUB_FLAG_OFFSET = 0xB40          # bit 0x10000 set => not in an active run
 BOSS_ID_OFFSET = 0xB50           # small clean int, +~10 per boss, drifts +/-3 - identifies
@@ -333,6 +353,16 @@ class NightreignMemoryReader:
         base_a_addr = self._resolve_function_address(self.pm, EVENTFLAG_BASE_A_AOB)
         return ptr_slot, base_a_addr
 
+    def resolve_all_bosses_unlock_target(self) -> int:
+        """Resolves the address of the `jz` instruction that gates boss selectability in the
+        Expeditions menu (see ACCESS_ALL_BOSSES_AOB above), for memory_writer.py's
+        NightreignMemoryWriter.set_all_bosses_unlocked(). Same call-only-when-wanted convention as
+        resolve_event_flag_targets()."""
+        if not self.connected:
+            raise PointerNotFoundError("not connected - call connect() first")
+        return (self._resolve_function_address(self.pm, ACCESS_ALL_BOSSES_AOB)
+                + ACCESS_ALL_BOSSES_JZ_OFFSET)
+
     def resolve_item_drop_targets(self) -> ItemDropTargets:
         """Resolves everything memory_writer.py's NightreignItemDropWriter needs to drop a real
         item on the ground in a running game - the randomized-weapon filler write path. Same
@@ -389,6 +419,19 @@ class NightreignMemoryReader:
                 if not ptr:
                     return None
             return self.pm.read_int(ptr + WORLDCHRMAN_ANIM_FINAL_OFFSET)
+        except (pymem.exception.MemoryReadError, pymem.exception.WinAPIError):
+            return None
+
+    def is_save_loaded(self, worldchrman_slot: int) -> Optional[bool]:
+        """True if a save is actually loaded (hub or an active Expedition), False if still at the
+        main menu, None if transiently unreadable. read_hub_state() alone can't tell these apart -
+        its "not in an active run" bit is set at both the main menu and the hub - but WorldChrMan
+        itself only resolves to a live object once a save is loaded, reading null at the main menu
+        (live-confirmed 2026-08-29). Same "don't disconnect() on a transient null" reasoning as
+        read_current_animation() - a scene transition can leave this briefly unreadable without the
+        game process having died."""
+        try:
+            return bool(self.pm.read_ulonglong(worldchrman_slot))
         except (pymem.exception.MemoryReadError, pymem.exception.WinAPIError):
             return None
 

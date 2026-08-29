@@ -5,7 +5,6 @@ promised — this is a running list of what's being considered/investigated, not
 
 - **DLC support** — DLC support
 - **Weaponsanity** — an idea that winning a run with each weapon is a check
-- **Character unlocks** — start with one character, unlock the rest via received items.
 - **Relic drops** — receive relics as items.
 - **Shop checks** — send a check for buying something from the small jar bazaar
 - **Metaprogression** — "Progressive Level" / "Progressive Flask" items that raise your starting

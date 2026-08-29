@@ -2,7 +2,7 @@ from typing import NamedTuple
 
 from BaseClasses import Item, ItemClassification
 
-from .game_data import ACCESS_CHARACTERS, ACCESS_NIGHTLORDS, NIGHTLORDS
+from .game_data import ACCESS_CHARACTERS, ACCESS_NIGHTLORDS, EVERDARK_NIGHTLORDS, NIGHTLORDS
 
 
 class NightreignItem(Item):
@@ -48,6 +48,16 @@ item_table = {
         BASE_ID + len(NIGHTLORDS) + len(ACCESS_NIGHTLORDS) + 2 + i, ItemClassification.progression
     )
     for i, name in enumerate(ACCESS_CHARACTERS)
+} | {
+    # One progression "Everdark X Access" item per EVERDARK_NIGHTLORDS - Everdark Sovereigns are
+    # treated as entirely separate bosses from their base Nightlord (own checks, own access item),
+    # not a variant unlocked by the base Nightlord's own Access item. Appended after everything
+    # above (ids continue sequentially) to avoid disturbing any existing seed's item ids.
+    f"Everdark {name} Access": ItemData(
+        BASE_ID + len(NIGHTLORDS) + len(ACCESS_NIGHTLORDS) + 2 + len(ACCESS_CHARACTERS) + i,
+        ItemClassification.progression,
+    )
+    for i, name in enumerate(EVERDARK_NIGHTLORDS)
 }
 
 # get_filler_item_name() must only ever choose from FILLER_ITEM_NAMES, not item_table's full key

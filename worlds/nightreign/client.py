@@ -1,11 +1,17 @@
 """Archipelago client for Elden Ring Nightreign.
 
 Polls the running game via memory_reader.py and sends a location check on
-each detected Nightlord win. When enable_everdark_checks is on for this slot
-and the win is detected as an Everdark Sovereign variant (memory_reader.py's
-read_everdark_flag()), a separate "Defeat Everdark X" location is sent instead
-of the normal one - see Options.py's EnableEverdarkChecks for the disclaimer
-around Everdark availability being outside this project's control. When the
+each detected Nightlord win. When a Nightlord's Everdark Sovereign entry is
+included for this slot (slot_data's everdark_nightlords, from Options.py's
+IncludedNightlords - each Everdark Sovereign is its own separate entry there,
+e.g. "Everdark Tricephalos") and the win is detected as its Everdark variant
+(memory_reader.py's read_everdark_flag()), a separate "Defeat Everdark X"
+location is sent instead of the normal one - see Options.py's
+IncludedNightlords for the disclaimer around Everdark availability being
+outside this project's control. Everdark
+Sovereigns are treated as entirely separate bosses from their base Nightlord: with
+gate_boss_access on, an Everdark win is checked against its own "Everdark X Access" item, never
+the base Nightlord's, so having received one doesn't unlock the other. When the
 gate_boss_access option is on for this
 slot (learned from slot_data on connect), received Access items are synced
 into the game via memory_writer.py's SetEventFlag port, gating which
@@ -28,7 +34,13 @@ function needs a grounded position, so this is checked every poll tick, not
 just once on Expedition entry). Delivery is also withheld (not lost - just retried on a later run)
 for the whole run whenever _current_run_is_locked() says the current boss/character isn't actually
 unlocked for this slot yet, so an earned weapon/talisman drop is never spent on a run that
-_handle_win would refuse to send a check for anyway. With all three options off, received items
+_handle_win would refuse to send a check for anyway. When unlock_all_bosses_in_game is on, every
+tick spent genuinely in the hub (not the main menu - read_hub_state() alone can't tell those apart,
+see memory_reader.py's is_save_loaded()) re-applies a code patch (memory_reader.ACCESS_ALL_BOSSES_AOB)
+that keeps every boss, including DLC Nightlords and Everdark Sovereigns, selectable in the game's
+own Expeditions menu regardless of real in-game unlock progress - purely a menu-selectability patch,
+it never touches AP's own unlock state, so gate_boss_access's Access-item checks above still apply
+exactly as if this were off. With all four options off, received items
 have no in-game effect - the base CommonContext/CLI/GUI machinery just logs
 them, same as before any was added.
 """
@@ -57,7 +69,8 @@ from .game_data import (ACCESS_CHARACTERS, ACCESS_ITEM_EVENT_FLAGS, ACCESS_NIGHT
                         CHARACTER_ACCESS_EVENT_FLAGS, EFFECT_CAP_MAP, EVERDARK_NIGHTLORDS,
                         TALISMAN_TABLE, WEAPON_ART_TABLE, WEAPON_TABLE, is_flying_animation,
                         natural_weapon_tier, roll_effect_tier, roll_upgrade_tier,
-                        starting_free_characters, starting_free_nightlords)
+                        starting_free_characters, starting_free_everdark_nightlords,
+                        starting_free_nightlords)
 from .Items import lookup_id_to_name
 from .Locations import (location_name, location_name_boss_only, location_name_everdark,
                         location_name_everdark_boss_only, location_name_to_id)
@@ -110,10 +123,12 @@ class NightreignContext(CommonContext):
     slot_data: dict
     gate_boss_access: bool
     gate_character_access: bool
+    unlock_all_bosses_in_game: bool
     randomize_weapons: bool
     randomize_talismans: bool
-    enable_everdark_checks: bool
+    everdark_nightlords: set
     freed_nightlords: set
+    freed_everdark_nightlords: set
     freed_characters: set
     per_character_checks: bool
     goal: str
@@ -123,6 +138,8 @@ class NightreignContext(CommonContext):
     item_drop_writer: Optional[NightreignItemDropWriter]
     _worldchrman_slot: Optional[int]
     _hub_exit_time: Optional[float]
+    _all_bosses_unlock_addr: Optional[int]
+    _all_bosses_worldchrman_slot: Optional[int]
 
     _last_pulse: Optional[int]
     _synced_flags: set
@@ -144,10 +161,12 @@ class NightreignContext(CommonContext):
         self.slot_data = {}
         self.gate_boss_access = False
         self.gate_character_access = False
+        self.unlock_all_bosses_in_game = False
         self.randomize_weapons = False
         self.randomize_talismans = False
-        self.enable_everdark_checks = False
+        self.everdark_nightlords = set()
         self.freed_nightlords = set()
+        self.freed_everdark_nightlords = set()
         self.freed_characters = set()
         self.per_character_checks = False
         self.goal = "all_bosses"
@@ -157,6 +176,8 @@ class NightreignContext(CommonContext):
         self.item_drop_writer = None
         self._worldchrman_slot = None
         self._hub_exit_time = None
+        self._all_bosses_unlock_addr = None
+        self._all_bosses_worldchrman_slot = None
         self._last_pulse = None
         self._synced_flags = set()
         self._last_overlay_state = None
@@ -197,15 +218,28 @@ class NightreignContext(CommonContext):
             self.slot_data = args.get("slot_data", {}) or {}
             self.gate_boss_access = bool(self.slot_data.get("gate_boss_access", False))
             self.gate_character_access = bool(self.slot_data.get("gate_character_access", False))
+            self.unlock_all_bosses_in_game = bool(
+                self.slot_data.get("unlock_all_bosses_in_game", False)
+            )
             # slot_data keys are "receive_weapons"/"receive_talismans" (see Options.py/__init__.py's
             # fill_slot_data), not "randomize_weapons"/"randomize_talismans" - using the wrong keys
             # previously fell back to False regardless of the player's actual YAML settings.
             self.randomize_weapons = bool(self.slot_data.get("receive_weapons", False))
             self.randomize_talismans = bool(self.slot_data.get("receive_talismans", False))
-            self.enable_everdark_checks = bool(self.slot_data.get("enable_everdark_checks", False))
-            self.freed_nightlords = set(
-                starting_free_nightlords(self.slot_data.get("starting_boss", "Tricephalos"))
-            )
+            self.everdark_nightlords = set(self.slot_data.get("everdark_nightlords") or [])
+            # starting_boss_everdark (see Options.py's StartingBoss/__init__.py's generate_early())
+            # decides which set the starting_boss name goes into - Everdark Sovereigns are separate
+            # bosses from their base Nightlord, so an everdark_* starting_boss frees the Everdark
+            # form only, leaving the base Nightlord just as gated as any other.
+            starting_boss = self.slot_data.get("starting_boss", "Tricephalos")
+            if bool(self.slot_data.get("starting_boss_everdark", False)):
+                self.freed_nightlords = set()
+                self.freed_everdark_nightlords = set(
+                    starting_free_everdark_nightlords(starting_boss)
+                )
+            else:
+                self.freed_nightlords = set(starting_free_nightlords(starting_boss))
+                self.freed_everdark_nightlords = set()
             self.freed_characters = set(
                 starting_free_characters(self.slot_data.get("starting_character", "Wylder"))
             )
@@ -239,6 +273,7 @@ class NightreignContext(CommonContext):
             # this connect, so build the item-drop writer here too, not just in poll_loop.
             self._ensure_item_drop_ready()
             self._ensure_animation_ready()
+            self._ensure_all_bosses_unlock_ready()
 
         if cmd == "ReceivedItems":
             if self.gate_boss_access or self.gate_character_access:
@@ -280,12 +315,14 @@ class NightreignContext(CommonContext):
     # (live-verified, see game_data.CHARACTER_EVENT_FLAGS).
 
     def _owned_item_names(self) -> set:
-        # freed_nightlords (from starting_boss) and freed_characters (from starting_character) are
-        # stitched in as synthetic "X Access"/"X Character Access" entries so every downstream
-        # consumer - flag-firing, overlay's locked/unlocked display - treats them exactly like an
-        # already-received Access item, with no separate code path needed.
+        # freed_nightlords/freed_everdark_nightlords (from starting_boss) and freed_characters
+        # (from starting_character) are stitched in as synthetic "X Access"/"Everdark X Access"/
+        # "X Character Access" entries so every downstream consumer - flag-firing, overlay's
+        # locked/unlocked display - treats them exactly like an already-received Access item, with
+        # no separate code path needed.
         owned = {lookup_id_to_name.get(i.item) for i in self.items_received}
         owned |= {f"{name} Access" for name in self.freed_nightlords}
+        owned |= {f"Everdark {name} Access" for name in self.freed_everdark_nightlords}
         owned |= {f"{name} Character Access" for name in self.freed_characters}
         return owned
 
@@ -317,13 +354,15 @@ class NightreignContext(CommonContext):
                 )
 
     def _ensure_gating_ready(self) -> None:
-        """Builds the writer once either gate_boss_access/gate_character_access and the game
-        connection are known, regardless of which arrived first this session - the game process
-        attaching and the AP 'Connected' packet (which is what sets both options) race each other,
-        and either can win. Called from both sides of that race: here and from poll_loop's
-        connect-transition. A no-op once the writer already exists."""
-        if (not (self.gate_boss_access or self.gate_character_access) or not self.reader.connected
-                or self.writer is not None):
+        """Builds the writer once either gate_boss_access/gate_character_access/
+        unlock_all_bosses_in_game and the game connection are known, regardless of which arrived
+        first this session - the game process attaching and the AP 'Connected' packet (which is
+        what sets all three options) race each other, and either can win. Called from both sides
+        of that race: here and from poll_loop's connect-transition. A no-op once the writer
+        already exists."""
+        if (not (self.gate_boss_access or self.gate_character_access
+                 or self.unlock_all_bosses_in_game)
+                or not self.reader.connected or self.writer is not None):
             return
         self._try_build_writer()
 
@@ -340,15 +379,21 @@ class NightreignContext(CommonContext):
         self.overlay.start()
         logger.info("Overlay started (pid=%s).", self.reader.pm.process_id)
 
-    def _warn_if_boss_locked(self, boss_name: str) -> None:
-        """Logs (and records to run state) an Expedition started on a Nightlord whose Access item
-        this slot hasn't received yet. gate_boss_access's flag write is all-or-nothing (see the
-        module comment above _owned_item_names) - receiving any one Access item reveals all 6
-        secondary bosses in the game's own menu, so nothing in-game stops the player from
-        selecting one they don't actually have Access to. The overlay already shows this
-        passively; this is the same check surfaced as a log line for the "basically wasting their
-        run" case the player might not notice mid-run."""
-        access_name = f"{boss_name} Access"
+    def _warn_if_boss_locked(self, boss_name: str, everdark: bool = False) -> None:
+        """Logs (and records to run state) an Expedition started on a Nightlord (or, if everdark
+        is True and boss_name has an Everdark form, its Everdark Sovereign - a separate boss with
+        its own "Everdark X Access" item) whose Access item this slot hasn't received yet.
+        gate_boss_access's flag write is all-or-nothing (see the module comment above
+        _owned_item_names) - receiving any one base-boss Access item reveals all 6 secondary
+        bosses in the game's own menu, so nothing in-game stops the player from selecting one they
+        don't actually have Access to. The overlay already shows this passively; this is the same
+        check surfaced as a log line for the "basically wasting their run" case the player might
+        not notice mid-run."""
+        is_everdark = everdark and boss_name in EVERDARK_NIGHTLORDS
+        access_name = f"Everdark {boss_name} Access" if is_everdark else f"{boss_name} Access"
+        # Everdark access names are never in ACCESS_ITEM_EVENT_FLAGS (no known in-game unlock
+        # mechanism - see Options.py's disclaimer), so this warning naturally never fires for an
+        # Everdark run, same as it already skips Tricephalos/Balancers/Dreglord for the same reason.
         if access_name not in ACCESS_ITEM_EVENT_FLAGS or access_name in self._owned_item_names():
             return
         logger.warning(
@@ -359,6 +404,7 @@ class NightreignContext(CommonContext):
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "type": "locked_boss_attempt",
             "boss": boss_name,
+            "everdark": is_everdark,
         })
 
     def _warn_if_character_locked(self, character_name: str) -> None:
@@ -398,8 +444,14 @@ class NightreignContext(CommonContext):
         owned_names = self._owned_item_names()
         if self.gate_boss_access:
             boss = self.reader.read_boss_id()
-            if boss.status == "matched" and f"{boss.name} Access" not in owned_names:
-                return True
+            if boss.status == "matched":
+                everdark = bool(self.reader.read_everdark_flag())
+                is_everdark = everdark and boss.name in EVERDARK_NIGHTLORDS
+                access_name = (
+                    f"Everdark {boss.name} Access" if is_everdark else f"{boss.name} Access"
+                )
+                if access_name not in owned_names:
+                    return True
         if self.gate_character_access:
             character_name = self.reader.read_character_class_name()
             if character_name is not None and f"{character_name} Character Access" not in owned_names:
@@ -414,10 +466,33 @@ class NightreignContext(CommonContext):
                          "this session, the read-only tracker is unaffected.", e)
             self.gate_boss_access = False
             self.gate_character_access = False
+            self.unlock_all_bosses_in_game = False
             return
         self.writer = NightreignMemoryWriter(self.reader.pm, ptr_slot, base_a_addr)
         logger.info("Boss/character-gating writer resolved (ptr_slot=0x%X, base_a=0x%X).",
                     ptr_slot, base_a_addr)
+
+    def _ensure_all_bosses_unlock_ready(self) -> None:
+        """Resolves the all-bosses-unlock patch address and a dedicated WorldChrMan pointer slot
+        (used only to tell the hub apart from the main menu - see memory_reader.py's
+        is_save_loaded()) once unlock_all_bosses_in_game and the game connection are known. Same
+        race/no-op-once-ready shape as _ensure_animation_ready - kept as its own dedicated
+        WorldChrMan resolve rather than sharing _worldchrman_slot, so a failure here can't disable
+        randomize_weapons/randomize_talismans (or vice versa) - the two features are otherwise
+        unrelated. Requires self.writer already built (see _ensure_gating_ready)."""
+        if (not self.unlock_all_bosses_in_game or not self.reader.connected
+                or self.writer is None or self._all_bosses_unlock_addr is not None):
+            return
+        try:
+            self._all_bosses_unlock_addr = self.reader.resolve_all_bosses_unlock_target()
+            self._all_bosses_worldchrman_slot = self.reader.resolve_current_animation_target()
+        except PointerNotFoundError as e:
+            logger.error("All-bosses-unlock write path unavailable (%s) - disabling "
+                         "unlock_all_bosses_in_game this session, the read-only tracker is "
+                         "unaffected.", e)
+            self.unlock_all_bosses_in_game = False
+            self._all_bosses_unlock_addr = None
+            self._all_bosses_worldchrman_slot = None
 
     # --- Randomized item-drop write path (weapons and talismans) ---
     # Off unless randomize_weapons/randomize_talismans is on. A received item is rolled into a
@@ -674,6 +749,8 @@ class NightreignContext(CommonContext):
                     self.item_drop_writer = None
                     self._worldchrman_slot = None
                     self._hub_exit_time = None
+                    self._all_bosses_unlock_addr = None
+                    self._all_bosses_worldchrman_slot = None
                     self._locked_boss_warned = False
                     self._locked_character_warned = False
                     self._locked_run_drop_withheld_warned = False
@@ -686,6 +763,7 @@ class NightreignContext(CommonContext):
                                 asyncio.create_task(self._sync_event_flags())
                             self._ensure_item_drop_ready()
                             self._ensure_animation_ready()
+                            self._ensure_all_bosses_unlock_ready()
                         else:
                             await asyncio.sleep(RECONNECT_INTERVAL)
                             continue
@@ -740,6 +818,19 @@ class NightreignContext(CommonContext):
                 # active run, None if transiently unreadable (e.g. a scene transition).
                 in_hub = self.reader.read_hub_state()
 
+                if (self.unlock_all_bosses_in_game and self.writer is not None
+                        and self._all_bosses_unlock_addr is not None
+                        and self._all_bosses_worldchrman_slot is not None and in_hub):
+                    # in_hub alone can't tell the main menu apart from the actual hub (both read
+                    # True - see the comment above), so also require WorldChrMan to resolve to a
+                    # live object (see memory_reader.py's is_save_loaded()) before patching menu
+                    # code - firing this at the main menu, before any save is even loaded, is
+                    # untested and deliberately avoided. Idempotent (see set_all_bosses_unlocked's
+                    # docstring), so retrying every tick this condition holds is cheap and needs no
+                    # "already applied" bookkeeping.
+                    if self.reader.is_save_loaded(self._all_bosses_worldchrman_slot):
+                        self.writer.set_all_bosses_unlocked(self._all_bosses_unlock_addr, True)
+
                 if self.gate_boss_access:
                     if in_hub:
                         # Back in the hub (or a fresh/unreadable tick before the first Expedition
@@ -753,7 +844,9 @@ class NightreignContext(CommonContext):
                         boss = self.reader.read_boss_id()
                         if boss.status == "matched":
                             self._locked_boss_warned = True
-                            self._warn_if_boss_locked(boss.name)
+                            self._warn_if_boss_locked(
+                                boss.name, bool(self.reader.read_everdark_flag())
+                            )
 
                 if self.gate_character_access:
                     if in_hub:
@@ -819,6 +912,15 @@ class NightreignContext(CommonContext):
                             locked_bosses = [
                                 name for name in ACCESS_NIGHTLORDS
                                 if f"{name} Access" not in owned_names
+                            ]
+                            # Everdark Sovereigns are separate bosses with their own Access item
+                            # (see Items.py) - self.everdark_nightlords (from slot_data, built in
+                            # __init__.py's create_regions()) is exactly this slot's included
+                            # Everdark entries, so this never lists one that isn't actually in the
+                            # pool/goal for this slot.
+                            locked_bosses += [
+                                f"Everdark {name}" for name in self.everdark_nightlords
+                                if f"Everdark {name} Access" not in owned_names
                             ]
                         if self.gate_character_access:
                             locked_characters = [
@@ -910,42 +1012,64 @@ class NightreignContext(CommonContext):
             })
             return
 
-        if (self.gate_boss_access and f"{boss.name} Access" not in self._owned_item_names()):
-            # Not just defense-in-depth: the 6 secondary bosses share EventFlag 110
-            # (game_data.EVENT_FLAG_SECONDARY_BOSSES), so receiving any one of their Access items
-            # makes the game's own UI select-able for all 6, including ones this slot hasn't
-            # actually received yet (e.g. only "Augur Access" received unlocks Fissure in the Fog,
-            # Sentient Pest, etc. too, in-game). This check is keyed on the specific Nightlord's own
-            # Access item, not the shared flag, so a win against one of those still-unowned 5 is
-            # correctly skipped here even though the game let the player queue into it.
+        # Read everdark before the access-item gate below: Everdark Sovereigns are separate bosses
+        # from their base Nightlord (own checks, own "Everdark X Access" item - see Items.py), so
+        # which access item this win needs to be checked against depends on it.
+        everdark = bool(self.reader.read_everdark_flag())  # None (unreadable) treated as False
+        has_everdark_form = boss.name in EVERDARK_NIGHTLORDS
+
+        if everdark and not has_everdark_form:
+            # An Everdark win, but this Nightlord has no Everdark form (shouldn't happen - Night
+            # Aspect/Dreglord are the only ones, and neither is fought via a normal win pulse the
+            # same way). Deliberately not falling back to crediting the normal "Defeat X" location
+            # instead - that would reward a harder fight with a check that doesn't reflect what
+            # actually happened.
             logger.info(
-                "Win detected against %s, but this slot hasn't received %s's Access item yet - "
-                "not sending.", boss.name, boss.name,
+                "Win detected as Everdark %s, but this Nightlord has no Everdark form - not "
+                "sending.", boss.name,
+            )
+            return
+
+        if everdark and boss.name not in self.everdark_nightlords:
+            # self.everdark_nightlords (from slot_data's everdark_nightlords - see __init__.py's
+            # create_regions()) is exactly this slot's included_nightlords "Everdark X" entries. A
+            # Nightlord with a structural Everdark form but no entry here has no location/Access
+            # item at all for it in this slot.
+            logger.info(
+                "Win detected as Everdark %s, but this slot's included_nightlords doesn't "
+                "include \"Everdark %s\" - not sending.", boss.name, boss.name,
+            )
+            return
+
+        is_everdark_win = everdark  # everdark here implies has_everdark_form and is included
+        access_name = f"Everdark {boss.name} Access" if is_everdark_win else f"{boss.name} Access"
+        if self.gate_boss_access and access_name not in self._owned_item_names():
+            # Not just defense-in-depth for the non-Everdark case: the 6 secondary bosses share
+            # EventFlag 110 (game_data.EVENT_FLAG_SECONDARY_BOSSES), so receiving any one of their
+            # Access items makes the game's own UI select-able for all 6, including ones this slot
+            # hasn't actually received yet (e.g. only "Augur Access" received unlocks Fissure in
+            # the Fog, Sentient Pest, etc. too, in-game). This check is keyed on the specific
+            # Nightlord's own Access item, not the shared flag, so a win against one of those
+            # still-unowned 5 is correctly skipped here even though the game let the player queue
+            # into it. Everdark Access items have no such shared-flag mechanism at all (no known
+            # in-game unlock exists for Everdark - see Options.py's disclaimer), so for those this
+            # check is the only gate, not defense-in-depth on top of an in-game one.
+            logger.info(
+                "Win detected against %s, but this slot hasn't received %s yet - not sending.",
+                (f"Everdark {boss.name}" if is_everdark_win else boss.name), access_name,
             )
             self._append_event({
                 "timestamp": timestamp,
                 "type": "locked_boss_win_skipped",
                 "character": character_name,
                 "boss": boss.name,
+                "everdark": is_everdark_win,
             })
             return
 
-        everdark = bool(self.reader.read_everdark_flag())  # None (unreadable) treated as False
-
-        if everdark and self.enable_everdark_checks and boss.name in EVERDARK_NIGHTLORDS:
+        if is_everdark_win:
             name = (location_name_everdark(character_name, boss.name) if self.per_character_checks
                     else location_name_everdark_boss_only(boss.name))
-        elif everdark:
-            # An Everdark win, but this slot either doesn't have enable_everdark_checks on, or
-            # this Nightlord has no Everdark form (shouldn't happen - Night Aspect is the only
-            # one, and it isn't fought via a normal win pulse the same way). Deliberately not
-            # falling back to crediting the normal "Defeat X" location instead - that would
-            # reward a harder fight with a check that doesn't reflect what actually happened.
-            logger.info(
-                "Win detected as Everdark %s, but Everdark checks aren't enabled for this slot "
-                "(or this Nightlord has no Everdark form) - not sending.", boss.name,
-            )
-            return
         else:
             name = (location_name(character_name, boss.name) if self.per_character_checks
                     else location_name_boss_only(boss.name))

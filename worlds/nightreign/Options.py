@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from Options import Choice, OptionSet, PerGameCommonOptions, Range, Toggle
 
 # Local Imports
-from .game_data import CHARACTERS, NIGHTLORDS
+from .game_data import ALL_NIGHTLORD_ENTRIES, CHARACTERS, EVERDARK_NIGHTLORDS, NIGHTLORDS
 
 
 class IncludedCharacters(OptionSet):
@@ -21,11 +21,16 @@ class IncludedCharacters(OptionSet):
 
 
 class IncludedNightlords(OptionSet):
-    """Which Nightlords to generate location checks for.
+    """Which Nightlords to generate location checks for. Each Everdark Sovereign is its own
+    separate entry (e.g. "Everdark Tricephalos") - Everdark Sovereigns are entirely separate
+    bosses from their base Nightlord (own check, own Access item), so add one explicitly to
+    include its check; it is NOT implied by including the base Nightlord. Excluded by default,
+    since reaching a specific Everdark Sovereign depends on an external weekly rotation this world
+    can't unlock or guarantee - the actual availability is on you, the player.
     """
 
     display_name = "Included Nightlords"
-    valid_keys = frozenset(NIGHTLORDS)
+    valid_keys = frozenset(ALL_NIGHTLORD_ENTRIES)
     default = frozenset(NIGHTLORDS)
 
 
@@ -54,6 +59,16 @@ class StartingBoss(Choice):
     option_darkdrift_night = 5
     option_fissure_in_the_fog = 6
     option_night_aspect = 7
+    option_balancers = 8
+    option_dreglord = 9
+    option_everdark_tricephalos = 10
+    option_everdark_gaping_jaw = 11
+    option_everdark_sentient_pest = 12
+    option_everdark_augur = 13
+    option_everdark_equilibrious_beast = 14
+    option_everdark_darkdrift_night = 15
+    option_everdark_fissure_in_the_fog = 16
+    option_everdark_balancers = 17
     default = 0
 
 
@@ -63,9 +78,17 @@ assert [StartingBoss.name_lookup[i] for i in range(len(NIGHTLORDS))] == [
     name.lower().replace(" ", "_") for name in NIGHTLORDS
 ], "StartingBoss option values must stay in sync with game_data.NIGHTLORDS order."
 
+# The everdark_* block right after continues positionally over EVERDARK_NIGHTLORDS (world code
+# resolves a value >= len(NIGHTLORDS) via EVERDARK_NIGHTLORDS[value - len(NIGHTLORDS)]).
+assert [
+    StartingBoss.name_lookup[len(NIGHTLORDS) + i] for i in range(len(EVERDARK_NIGHTLORDS))
+] == [
+    "everdark_" + name.lower().replace(" ", "_") for name in EVERDARK_NIGHTLORDS
+], "StartingBoss's everdark_* option values must stay in sync with game_data.EVERDARK_NIGHTLORDS order."
+
 
 class GateBossAccess(Toggle):
-    """If enabled, every Nightlord other than your chosen starting_boss requires receiving that
+    """If enabled, every Nightlord other than your chosen starting boss requires receiving that
     Nightlord's Access item before it counts as yours.
     """
 
@@ -73,9 +96,29 @@ class GateBossAccess(Toggle):
     default = 1
 
 
+class UnlockAllBossesInGame(Toggle):
+    """For new files: this ensures that bosses are unlocked in-game, bypassing the natural
+    progression that Fromsoft intended for the player to follow.
+
+    This permanently alters files - highly recommended you not use this option for a file you 
+    intend to play online.
+    """
+
+    display_name = "Unlock for me"
+    default = 0
+
+    
+class GateCharacterAccess(Toggle):
+    """If enabled, receive access to characters from the multiworld.
+    If disabled, all characters are available from the start.
+    """
+
+    display_name = "Gate Character Access Behind Items"
+    default = 0
+
+
 class StartingCharacter(Choice):
-    """Which character starts unlocked, before receiving any Character Access items - or "random"
-    to have the generator pick one for this slot.
+    """If character access is gated, this is the character you start with.
     """
 
     display_name = "Starting Character"
@@ -97,15 +140,6 @@ class StartingCharacter(Choice):
 assert [StartingCharacter.name_lookup[i] for i in range(len(CHARACTERS))] == [
     name.lower().replace(" ", "_") for name in CHARACTERS
 ], "StartingCharacter option values must stay in sync with game_data.CHARACTERS order."
-
-
-class GateCharacterAccess(Toggle):
-    """If enabled, receive access to characters from the multiworld.
-    If disabled, all characters are available from the start.
-    """
-
-    display_name = "Gate Character Access Behind Items"
-    default = 0
 
 
 class ReceiveWeapons(Toggle):
@@ -144,24 +178,13 @@ class Goal(Choice):
     default = 0
 
 
-class EnableEverdarkChecks(Toggle):
-    """If enabled, adds checks for defeating Everdark Soverigns.
-
-    Note: The Nightreign client cannot unlock access to Everdark Sovereigns, you'll have to find
-    an alternative source for selecting them in the expedition menu. 
-    """
-
-    display_name = "Enable Everdark Checks"
-    default = 0
-
-
 class GoalRandomMin(Range):
     """Minimum number of specific "Defeat X as Y" objectives to require, when goal is random_subset.
     """
 
     display_name = "Random Goal Minimum Objectives"
     range_start = 1
-    range_end = 80  # len(CHARACTERS) * len(NIGHTLORDS), the largest possible combo count.
+    range_end = len(CHARACTERS) * len(NIGHTLORDS)  # the largest possible combo count.
     default = 3
 
 
@@ -171,7 +194,7 @@ class GoalRandomMax(Range):
 
     display_name = "Random Goal Maximum Objectives"
     range_start = 1
-    range_end = 80
+    range_end = len(CHARACTERS) * len(NIGHTLORDS)
     default = 8
 
 
@@ -182,11 +205,11 @@ class NightreignOptions(PerGameCommonOptions):
     bosses_with_characters: BossesWithCharacters
     starting_boss: StartingBoss
     gate_boss_access: GateBossAccess
+    unlock_all_bosses_in_game: UnlockAllBossesInGame
     starting_character: StartingCharacter
     gate_character_access: GateCharacterAccess
     receive_weapons: ReceiveWeapons
     receive_talismans: ReceiveTalismans
-    enable_everdark_checks: EnableEverdarkChecks
     goal: Goal
     goal_random_min: GoalRandomMin
     goal_random_max: GoalRandomMax

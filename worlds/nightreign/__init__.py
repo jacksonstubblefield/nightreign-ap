@@ -4,13 +4,16 @@ from worlds.AutoWorld import World, WebWorld
 from worlds.LauncherComponents import Component, Type, components, icon_paths, launch_subprocess
 
 from .game_data import (ACCESS_CHARACTERS, ACCESS_NIGHTLORDS, CHARACTERS, EVERDARK_NIGHTLORDS,
-                        NIGHTLORDS, starting_free_characters, starting_free_everdark_nightlords,
-                        starting_free_nightlords)
+                        NIGHTLORD_BONUS_INDICES, NIGHTLORDS, starting_free_characters,
+                        starting_free_everdark_nightlords, starting_free_nightlords,
+                        win_count_threshold_list)
 from .Items import FILLER_ITEM_NAMES, NightreignItem, item_name_to_id, item_table
 from .Locations import (NightreignLocation, location_name, location_name_boss_only,
                         location_name_everdark, location_name_everdark_boss_only,
-                        location_name_to_id)
-from .Options import NightreignOptions
+                        location_name_kill_bonus, location_name_night1, location_name_night2,
+                        location_name_strong_reward, location_name_to_id, location_name_weak_reward,
+                        location_name_win_count)
+from .Options import NightreignOptions, option_groups
 
 
 def launch_client():
@@ -37,6 +40,7 @@ class NightreignWeb(WebWorld):
     )
 
     tutorials = [setup_en]
+    option_groups = option_groups
 
 
 class NightreignWorld(World):
@@ -60,7 +64,24 @@ class NightreignWorld(World):
     IncludedNightlords disclaimer). Everdark Sovereigns are treated as entirely separate bosses
     from their base Nightlord: with gate_boss_access on, an Everdark location is gated behind its
     own "Everdark X Access" item, independent of whether the base Nightlord's own Access item has
-    been received.
+    been received. With win_count_checks enabled, extra locations are added for winning a
+    cumulative number of Expeditions this seed (see game_data.win_count_threshold_list and
+    win_count_up_to) - independent of which boss/character was defeated, never gated, and never
+    required for the goal. Two more check families add density within and across a Nightlord's own
+    Expeditions specifically (unlike win_count_checks, which is global), never gated, never
+    required for the goal, and universal - always generated, no option to disable "for now": a
+    Nightlord's first valid defeat always sends 4 extra bonus checks alongside the existing
+    "Defeat X" check (5 total, all at once - not a cumulative kill counter, repeat defeats award
+    nothing further here), and each Nightlord always has exactly one Night 1 Clear and one Night 2
+    Clear location, detected via the day/night phase transition rather than the win itself (Night 1
+    on defeating the mid-run boss, Night 2 on a successful transition out of the Nightlord fight
+    itself). A third family, weak_reward_checks/strong_reward_checks (cumulative counters, fixed at
+    1-5, for the game's own "Weak"/"Strong" reward-tier POI pickups) exists in Locations.py/
+    client.py but its Options.py toggles are currently commented out - live-confirmed to also fire
+    on any weapon pickup at all, including this world's own randomized weapon drops, so there's no
+    way to enable it right now (see Options.py for the known-issue writeup, still there next to the
+    commented-out classes). The two universal families mirror bosses_with_characters and cover
+    Everdark Sovereigns the same way the base locations do.
     """
 
     game = "Elden Ring Nightreign"
@@ -85,6 +106,9 @@ class NightreignWorld(World):
     freed_characters: set
     goal_groups: list[list[int]]
     goal_random_count: int
+    win_count_thresholds: list[int]
+    weak_reward_thresholds: list[int]
+    strong_reward_thresholds: list[int]
 
     def generate_early(self) -> None:
         # No item/location gating here (topology_present = False), so there's no CollectionState
@@ -171,6 +195,24 @@ class NightreignWorld(World):
                 )
             self.goal_random_count = self.random.randint(goal_min, min(goal_max, available))
 
+        # win_count_thresholds: the "Win N Expeditions" checks this slot actually generates (see
+        # Locations.py's location_name_win_count and game_data.win_count_threshold_list) - empty
+        # whenever win_count_checks is off. Passed to the client via fill_slot_data() rather than
+        # letting it recompute from win_count_up_to itself, so the two can never drift apart.
+        self.win_count_thresholds = []
+        if self.options.win_count_checks:
+            self.win_count_thresholds = win_count_threshold_list(self.options.win_count_up_to.value)
+
+        # weak_reward_thresholds/strong_reward_thresholds: always empty for now - WeakRewardChecks/
+        # StrongRewardChecks are commented out in Options.py (the underlying memory counter fires on
+        # any weapon pickup, not just genuine reward-tier POI clears - see game_data.py's
+        # REWARD_CHECK_THRESHOLDS comment). Left as real attributes (rather than deleted) so
+        # create_regions()/fill_slot_data() below don't need their own special-casing, and so
+        # restoring the option later is just restoring these two lines. Night 1/Night 2 Clear and
+        # the Nightlord Bonus checks have no threshold list at all - they're universal, not opt-in.
+        self.weak_reward_thresholds = []
+        self.strong_reward_thresholds = []
+
     def create_regions(self) -> None:
         included_nightlords = self.options.included_nightlords.value
 
@@ -224,9 +266,67 @@ class NightreignWorld(World):
                 if nightlord in self.everdark_nightlords
             ]
 
-        self.active_locations = [
-            name for name, _nightlord, _character in locations + everdark_locations
+        # Extra check-density families - each expands `locations`/`everdark_locations` (already
+        # filtered per-player above), reusing the exact same nightlord/character/everdark
+        # association those pairs already carry so the access_rule built below stays identical to
+        # the base "Defeat X" location's. Nightlord Bonus (4 extra locations alongside "Defeat X")
+        # and Night 1/Night 2 Clear (exactly one location each) are universal - always generated,
+        # no option gates them. Weak/Strong Reward stay opt-in, capped at a fixed 1-5
+        # (self.weak_reward_thresholds/strong_reward_thresholds are [] when their toggle is off -
+        # see generate_early()).
+        def _expand_thresholds(base_list, name_fn, thresholds, everdark) -> list:
+            return [
+                (name_fn(nightlord, count, character, everdark), nightlord, character)
+                for _name, nightlord, character in base_list
+                for count in thresholds
+            ]
+
+        def _expand_single(base_list, name_fn, everdark) -> list:
+            return [
+                (name_fn(nightlord, character, everdark), nightlord, character)
+                for _name, nightlord, character in base_list
+            ]
+
+        kill_bonus_locations = _expand_thresholds(
+            locations, location_name_kill_bonus, NIGHTLORD_BONUS_INDICES, False
+        )
+        kill_bonus_everdark_locations = _expand_thresholds(
+            everdark_locations, location_name_kill_bonus, NIGHTLORD_BONUS_INDICES, True
+        )
+        night1_locations = _expand_single(locations, location_name_night1, False)
+        night1_everdark_locations = _expand_single(everdark_locations, location_name_night1, True)
+        night2_locations = _expand_single(locations, location_name_night2, False)
+        night2_everdark_locations = _expand_single(everdark_locations, location_name_night2, True)
+        weak_reward_locations = _expand_thresholds(
+            locations, location_name_weak_reward, self.weak_reward_thresholds, False
+        )
+        weak_reward_everdark_locations = _expand_thresholds(
+            everdark_locations, location_name_weak_reward, self.weak_reward_thresholds, True
+        )
+        strong_reward_locations = _expand_thresholds(
+            locations, location_name_strong_reward, self.strong_reward_thresholds, False
+        )
+        strong_reward_everdark_locations = _expand_thresholds(
+            everdark_locations, location_name_strong_reward, self.strong_reward_thresholds, True
+        )
+        extra_check_locations = (
+            kill_bonus_locations + kill_bonus_everdark_locations
+            + night1_locations + night1_everdark_locations
+            + night2_locations + night2_everdark_locations
+            + weak_reward_locations + weak_reward_everdark_locations
+            + strong_reward_locations + strong_reward_everdark_locations
+        )
+
+        # Cumulative "Win N Expeditions" locations - independent of boss/character, seed-scoped
+        # (see self.win_count_thresholds, computed in generate_early()), never gated and never part
+        # of goal_groups below. Empty whenever win_count_checks is off.
+        win_count_names = [
+            location_name_win_count(count) for count in self.win_count_thresholds
         ]
+
+        self.active_locations = [
+            name for name, _nightlord, _character in locations + everdark_locations + extra_check_locations
+        ] + win_count_names
 
         # goal_groups: a list of groups, each satisfied by ANY one of its location ids being
         # checked; the goal is complete once EVERY group is satisfied (see client.py's
@@ -298,13 +398,30 @@ class NightreignWorld(World):
             # from whether one may hold a progression item.
             return location
 
-        for name, nightlord, character in locations:
+        def _add_menu_locations(location_list: list, everdark: bool) -> None:
+            for name, nightlord, character in location_list:
+                menu.locations.append(
+                    _make_location(name, nightlord, everdark=everdark, character=character)
+                )
+
+        _add_menu_locations(locations, everdark=False)
+        _add_menu_locations(everdark_locations, everdark=True)
+        _add_menu_locations(kill_bonus_locations, everdark=False)
+        _add_menu_locations(kill_bonus_everdark_locations, everdark=True)
+        _add_menu_locations(night1_locations, everdark=False)
+        _add_menu_locations(night1_everdark_locations, everdark=True)
+        _add_menu_locations(night2_locations, everdark=False)
+        _add_menu_locations(night2_everdark_locations, everdark=True)
+        _add_menu_locations(weak_reward_locations, everdark=False)
+        _add_menu_locations(weak_reward_everdark_locations, everdark=True)
+        _add_menu_locations(strong_reward_locations, everdark=False)
+        _add_menu_locations(strong_reward_everdark_locations, everdark=True)
+        # No access_rule: win-count locations aren't tied to any specific boss/character Access
+        # item, so - like everything else here (topology_present = False) - they're reachable from
+        # the start.
+        for name in win_count_names:
             menu.locations.append(
-                _make_location(name, nightlord, everdark=False, character=character)
-            )
-        for name, nightlord, character in everdark_locations:
-            menu.locations.append(
-                _make_location(name, nightlord, everdark=True, character=character)
+                NightreignLocation(self.player, name, self.location_name_to_id[name], menu)
             )
         self.multiworld.regions.append(menu)
 
@@ -381,6 +498,15 @@ class NightreignWorld(World):
             "unlock_all_bosses_in_game": bool(self.options.unlock_all_bosses_in_game),
             "receive_weapons": bool(self.options.receive_weapons),
             "receive_talismans": bool(self.options.receive_talismans),
+            "win_count_checks": bool(self.options.win_count_checks),
+            "win_count_thresholds": self.win_count_thresholds,
+            # weak_reward_checks/strong_reward_checks: hardcoded False - the options are commented
+            # out in Options.py (see generate_early()'s comment above). weak/strong_reward_thresholds
+            # stay real keys (always []) so client.py's slot_data schema doesn't need touching.
+            "weak_reward_checks": False,
+            "weak_reward_thresholds": self.weak_reward_thresholds,
+            "strong_reward_checks": False,
+            "strong_reward_thresholds": self.strong_reward_thresholds,
             "everdark_nightlords": self.everdark_nightlords,
             "starting_boss": self.starting_boss,
             "starting_boss_everdark": self.starting_boss_everdark,

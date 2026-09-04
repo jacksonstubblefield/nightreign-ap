@@ -25,9 +25,27 @@ EXE_NAME = "nightreign.exe"
 GAMEMAN_AOB = "48 8B 05 ?? ?? ?? ?? 83 B8 ?? ?? ?? ?? 00 ?? ?? ?? ?? ?? ?? 48 8D 4C 24"
 GAMEDATAMAN_AOB = "48 8B 0D ?? ?? ?? ?? F3 48 0F 2C C0"
 
+# Same pointer-slot shape as the two above, but the `mov reg,[rip+disp32]` instruction isn't at
+# the start of the match - it starts MAPITEMMAN_AOB_OFFSET bytes in (ported from
+# worlds/nightreign/game_data.py's production copy of the same AOB/offset).
+MAPITEMMAN_AOB = "48 8B C8 E8 ?? ?? ?? ?? 0F 28 00 66 0F 7F 44 24 50"
+MAPITEMMAN_AOB_OFFSET = 0x11
+
+# Same pointer-slot shape as GAMEMAN_AOB/GAMEDATAMAN_AOB (offset 0), ported from
+# worlds/nightreign/game_data.py. Unlike those two, WorldChrMan's live object address changes
+# across scenes (re-walk on every read, don't cache) - this is where entity/enemy data would live,
+# unlike GameDataMan/MapItemMan which turned out to be reward/pickup-focused.
+WORLDCHRMAN_AOB = "48 8B 05 ?? ?? ?? ?? 0F 28 F1 48 85 C0"
+
 AOB_TARGETS = {
     "gameman": GAMEMAN_AOB,
     "gamedataman": GAMEDATAMAN_AOB,
+    "mapitemman": MAPITEMMAN_AOB,
+    "worldchrman": WORLDCHRMAN_AOB,
+}
+
+AOB_OFFSETS = {
+    "mapitemman": MAPITEMMAN_AOB_OFFSET,
 }
 
 
@@ -151,21 +169,23 @@ def open_process(pid):
     return h_process
 
 
-def resolve_pointer_slot(h_process, module_base, module_size, aob_pattern):
+def resolve_pointer_slot(h_process, module_base, module_size, aob_pattern, offset=0):
     """Return the pointer-slot address for a `mov reg,[rip+disp32]`-shaped AOB
     (module_base/module_size from find_module(); slot holds the live object addr,
-    re-read on every access rather than cached, per every other reader in this repo)."""
+    re-read on every access rather than cached, per every other reader in this repo).
+    `offset` shifts the match address forward before the RIP math, for AOBs like
+    MAPITEMMAN_AOB where the mov instruction isn't at the start of the match."""
     module_bytes = read_bytes(h_process, module_base, module_size)
     regex = aob_to_regex(aob_pattern)
     match = regex.search(module_bytes)
     if not match:
         raise LookupError("AOB pattern not found in module - build/version likely changed")
-    match_addr = module_base + match.start()
-    disp = struct.unpack_from("<i", module_bytes, match.start() + 3)[0]
+    match_addr = module_base + match.start() + offset
+    disp = struct.unpack_from("<i", module_bytes, match.start() + offset + 3)[0]
     return match_addr + 7 + disp
 
 
-def resolve_pid_module_slot(aob_pattern, exe_name=EXE_NAME):
+def resolve_pid_module_slot(aob_pattern, exe_name=EXE_NAME, offset=0):
     """Convenience wrapper: find the process/module and resolve a pointer slot in
     one call. Returns (h_process, pointer_slot). Caller owns closing h_process."""
     pid = find_pid(exe_name)
@@ -177,7 +197,7 @@ def resolve_pid_module_slot(aob_pattern, exe_name=EXE_NAME):
     module_base, module_size = module
     h_process = open_process(pid)
     try:
-        pointer_slot = resolve_pointer_slot(h_process, module_base, module_size, aob_pattern)
+        pointer_slot = resolve_pointer_slot(h_process, module_base, module_size, aob_pattern, offset=offset)
     except Exception:
         kernel32.CloseHandle(h_process)
         raise

@@ -15,7 +15,7 @@ import os
 import sys
 import time
 
-from spike_common import AOB_TARGETS, kernel32, read_bytes, resolve_pid_module_slot, struct
+from spike_common import AOB_OFFSETS, AOB_TARGETS, kernel32, read_bytes, resolve_pid_module_slot, struct
 
 DEFAULT_DUMP_SIZE = 0x3000
 GAP_SECONDS = 3
@@ -31,9 +31,10 @@ def main():
     args = parser.parse_args()
 
     aob_pattern = AOB_TARGETS[args.target]
+    aob_offset = AOB_OFFSETS.get(args.target, 0)
 
     try:
-        h_process, pointer_slot = resolve_pid_module_slot(aob_pattern)
+        h_process, pointer_slot = resolve_pid_module_slot(aob_pattern, offset=aob_offset)
     except LookupError as e:
         print(e)
         sys.exit(1)

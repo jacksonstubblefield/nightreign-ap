@@ -5,10 +5,11 @@
 from dataclasses import dataclass
 
 # Outside Imports
-from Options import Choice, OptionSet, PerGameCommonOptions, Range, Toggle
+from Options import Choice, OptionGroup, OptionSet, PerGameCommonOptions, Range, Toggle
 
 # Local Imports
-from .game_data import ALL_NIGHTLORD_ENTRIES, CHARACTERS, EVERDARK_NIGHTLORDS, NIGHTLORDS
+from .game_data import (ALL_NIGHTLORD_ENTRIES, CHARACTERS, EVERDARK_NIGHTLORDS, NIGHTLORDS,
+                        WIN_COUNT_UP_TO_MAX, WIN_COUNT_UP_TO_MIN)
 
 
 class IncludedCharacters(OptionSet):
@@ -158,6 +159,55 @@ class ReceiveTalismans(Toggle):
     default = 1
 
 
+class WinCountChecks(Toggle):
+    """If enabled, adds extra checks for winning a cumulative number of Expeditions this seed,
+    regardless of which boss or character was defeated - at 1, 2, 3, 5, 7, and 10 total wins, then
+    every 5 wins after that up to win_count_up_to (e.g. win_count_up_to=21 also adds 15, 20, and
+    21). Never required for the goal.
+    """
+
+    display_name = "Win Count Checks"
+    default = 1
+
+
+class WinCountUpTo(Range):
+    """How many total wins to require for the last win count check, if win_count_checks is
+    enabled - see WinCountChecks for how the checks below it are spaced.
+    """
+
+    display_name = "Win Count Up To"
+    range_start = WIN_COUNT_UP_TO_MIN
+    range_end = WIN_COUNT_UP_TO_MAX
+    default = 25
+
+
+# class WeakRewardChecks(Toggle):
+#     """If enabled, adds up to 5 cumulative checks per Nightlord (or per Nightlord x character) for
+#     collecting weak rewards.
+
+#     KNOWN ISSUE (off by default until this is resolved): the underlying memory counter fires on
+#     any weapon pickup, not just genuine reward-tier POI clears - including this world's own
+#     randomized weapon drops. Turning this on currently means "weak reward" checks award for
+#     picking up any weapon at all, not the POI-reward-tier event this option is meant to track.
+#     """
+
+#     display_name = "Weak Reward Checks"
+#     default = 0
+
+
+# class StrongRewardChecks(Toggle):
+#     """If enabled, adds up to 5 cumulative checks per Nightlord (or per Nightlord x character) for
+#     collecting strong rewards.
+
+#     KNOWN ISSUE (off by default until this is resolved): same false-positive problem as
+#     WeakRewardChecks - the underlying counter fires on any weapon pickup, not just genuine
+#     reward-tier POI clears.
+#     """
+
+#     display_name = "Strong Reward Checks"
+#     default = 0
+
+
 class Goal(Choice):
     """What this slot needs to accomplish to complete its goal.
 
@@ -198,6 +248,37 @@ class GoalRandomMax(Range):
     default = 8
 
 
+option_groups = [
+    OptionGroup("Bosses", [
+        IncludedNightlords,
+        StartingBoss,
+        GateBossAccess,
+        UnlockAllBossesInGame,
+        BossesWithCharacters,
+    ]),
+    OptionGroup("Characters", [
+        IncludedCharacters,
+        StartingCharacter,
+        GateCharacterAccess,
+    ]),
+    OptionGroup("Goal", [
+        Goal,
+        GoalRandomMin,
+        GoalRandomMax,
+    ]),
+    OptionGroup("Items", [
+        ReceiveWeapons,
+        ReceiveTalismans,
+    ]),
+    OptionGroup("Extra Checks", [
+        WinCountChecks,
+        WinCountUpTo,
+        # WeakRewardChecks,
+        # StrongRewardChecks,
+    ]),
+]
+
+
 @dataclass
 class NightreignOptions(PerGameCommonOptions):
     included_characters: IncludedCharacters
@@ -210,6 +291,10 @@ class NightreignOptions(PerGameCommonOptions):
     gate_character_access: GateCharacterAccess
     receive_weapons: ReceiveWeapons
     receive_talismans: ReceiveTalismans
+    win_count_checks: WinCountChecks
+    win_count_up_to: WinCountUpTo
+    # weak_reward_checks: WeakRewardChecks
+    # strong_reward_checks: StrongRewardChecks
     goal: Goal
     goal_random_min: GoalRandomMin
     goal_random_max: GoalRandomMax

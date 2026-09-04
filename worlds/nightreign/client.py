@@ -42,7 +42,36 @@ own Expeditions menu regardless of real in-game unlock progress - purely a menu-
 it never touches AP's own unlock state, so gate_boss_access's Access-item checks above still apply
 exactly as if this were off. With all four options off, received items
 have no in-game effect - the base CommonContext/CLI/GUI machinery just logs
-them, same as before any was added.
+them, same as before any was added. When win_count_checks is on, every detected win with a
+resolved boss_id (read_outcome_pulse()'s rising edge, same signal _handle_win already acts on)
+increments a per-seed win counter persisted in the run state file (_open_run_state/
+_write_run_state), and crossing one of this slot's win_count_thresholds (from slot_data - see
+game_data.win_count_threshold_list/__init__.py's generate_early()) sends that "Win N Expeditions"
+location - see _handle_win_count. This track is deliberately ungated: it counts every real win
+regardless of gate_boss_access/gate_character_access/per_character_checks or whether the
+boss/character is even in this slot's included_nightlords/included_characters, since it isn't tied
+to a specific boss or character in the first place.
+
+Three more per-Nightlord check families add density within a single Expedition rather than only at
+its very end. Two are universal, no option gates them: every valid defeat always sends 4 extra
+bonus locations (game_data.NIGHTLORD_BONUS_INDICES) together with _handle_win's own "Defeat X" send
+- NOT a cumulative counter; repeat defeats of the same boss/character/everdark award nothing
+further here (self.checked_location_ids already prevents re-sending, the same as the base "Defeat
+X" location). Night 1/Night 2 Clear are also universal, but each is a single non-cumulative
+location per boss/character/everdark, sent via _credit_single_check once (never re-sent, same
+dedup): Night 1 fires on the day/night phase's 1->2 transition (the mid-run boss defeated), Night 2
+fires on the 3->4 transition (a successful transition out of the Night 2/final fight - NOT merely
+reaching it, which is the 2->3 transition) - see game_data.py's DAY_PHASE_* constants for why "4" is
+flagged as a live-unconfirmed hypothesis. The third family, weak_reward_checks/strong_reward_checks,
+stays opt-in and IS a genuinely cumulative counter (fixed at 1-5, game_data.REWARD_CHECK_THRESHOLDS)
+sharing _credit_threshold (via _credit_extra_check) with win_count above - driven by
+memory_reader.read_weak_reward_count()/read_strong_reward_count(), monotonic per-Expedition pickup
+counters credited by their delta since the last poll. Night 1/Night 2 Clear and weak/strong reward
+all attribute their event to whichever Nightlord/character/Everdark-ness is currently resolvable
+(see _resolve_win_context), independently of the win-pulse _handle_win itself reacts to, and are
+silently skipped (not queued) whenever that context can't be resolved this tick or _access_owned
+says this slot hasn't earned it yet - same posture as _handle_win's own
+locked_boss_win_skipped/locked_character_win_skipped guards.
 """
 
 from __future__ import annotations
@@ -66,14 +95,17 @@ from CommonClient import (ClientCommandProcessor, CommonContext, get_base_parser
 from NetUtils import ClientStatus
 
 from .game_data import (ACCESS_CHARACTERS, ACCESS_ITEM_EVENT_FLAGS, ACCESS_NIGHTLORDS,
-                        CHARACTER_ACCESS_EVENT_FLAGS, EFFECT_CAP_MAP, EVERDARK_NIGHTLORDS,
-                        TALISMAN_TABLE, WEAPON_ART_TABLE, WEAPON_TABLE, is_flying_animation,
-                        natural_weapon_tier, roll_effect_tier, roll_upgrade_tier,
-                        starting_free_characters, starting_free_everdark_nightlords,
-                        starting_free_nightlords)
+                        CHARACTER_ACCESS_EVENT_FLAGS, DAY_PHASE_DAY_2, DAY_PHASE_DAY_3,
+                        DAY_PHASE_NIGHT_1, DAY_PHASE_NIGHT_2, EVERDARK_NIGHTLORDS,
+                        NIGHTLORD_BONUS_INDICES, is_flying_animation, starting_free_characters,
+                        starting_free_everdark_nightlords, starting_free_nightlords)
+from .item_data import (EFFECT_CAP_MAP, TALISMAN_TABLE, WEAPON_ART_TABLE, WEAPON_TABLE,
+                        natural_weapon_tier, roll_effect_tier, roll_upgrade_tier)
 from .Items import lookup_id_to_name
 from .Locations import (location_name, location_name_boss_only, location_name_everdark,
-                        location_name_everdark_boss_only, location_name_to_id)
+                        location_name_everdark_boss_only, location_name_kill_bonus,
+                        location_name_night1, location_name_night2, location_name_strong_reward,
+                        location_name_to_id, location_name_weak_reward, location_name_win_count)
 from .memory_reader import EACDetectedError, NightreignMemoryReader, PointerNotFoundError
 from .memory_writer import NightreignItemDropWriter, NightreignMemoryWriter
 from .overlay import NightreignOverlay
@@ -95,6 +127,23 @@ TOAST_DURATION_SECONDS = 3.0
 
 def _safe_filename_component(text: str) -> str:
     return re.sub(r"[^A-Za-z0-9_-]+", "_", text).strip("_") or "unknown"
+
+
+# JSON has no tuple keys, so the two per-(nightlord, character, everdark) count dicts below
+# (weak_reward_counts/strong_reward_counts - the only two genuinely cumulative counters among the
+# extra check families; nightlord bonus and Night 1/Night 2 Clear are non-cumulative, so they have
+# no dict of their own here, just self.checked_location_ids) are serialized as a flat list of
+# [nightlord, character, everdark, count] entries instead - same round-trip idea as
+# _delivered_weapon_keys/_delivered_talisman_keys' (index, player) tuple lists.
+def _counts_to_json(counts: dict) -> list:
+    return [
+        [nightlord, character, everdark, count]
+        for (nightlord, character, everdark), count in counts.items()
+    ]
+
+
+def _counts_from_json(data: list) -> dict:
+    return {(nightlord, character, everdark): count for nightlord, character, everdark, count in data}
 
 
 class NightreignCommandProcessor(ClientCommandProcessor):
@@ -131,6 +180,18 @@ class NightreignContext(CommonContext):
     freed_everdark_nightlords: set
     freed_characters: set
     per_character_checks: bool
+    win_count_checks: bool
+    win_count_thresholds: list
+    win_count: int
+    weak_reward_checks: bool
+    weak_reward_thresholds: list
+    strong_reward_checks: bool
+    strong_reward_thresholds: list
+    weak_reward_counts: dict
+    strong_reward_counts: dict
+    _last_day_phase: Optional[int]
+    _last_weak_reward_raw: Optional[int]
+    _last_strong_reward_raw: Optional[int]
     goal: str
     goal_groups: list
     writer: Optional[NightreignMemoryWriter]
@@ -169,6 +230,18 @@ class NightreignContext(CommonContext):
         self.freed_everdark_nightlords = set()
         self.freed_characters = set()
         self.per_character_checks = False
+        self.win_count_checks = False
+        self.win_count_thresholds = []
+        self.win_count = 0
+        self.weak_reward_checks = False
+        self.weak_reward_thresholds = []
+        self.strong_reward_checks = False
+        self.strong_reward_thresholds = []
+        self.weak_reward_counts = {}
+        self.strong_reward_counts = {}
+        self._last_day_phase = None
+        self._last_weak_reward_raw = None
+        self._last_strong_reward_raw = None
         self.goal = "all_bosses"
         self.goal_groups = []
         self.writer = None
@@ -245,6 +318,16 @@ class NightreignContext(CommonContext):
             )
             self.per_character_checks = (
                 self.slot_data.get("bosses_with_characters", "boss") == "boss_and_character"
+            )
+            self.win_count_checks = bool(self.slot_data.get("win_count_checks", False))
+            # Already capped at this slot's win_count_up_to by __init__.py's generate_early() - a
+            # threshold above that cap has no location in the pool at all.
+            self.win_count_thresholds = list(self.slot_data.get("win_count_thresholds") or [])
+            self.weak_reward_checks = bool(self.slot_data.get("weak_reward_checks", False))
+            self.weak_reward_thresholds = list(self.slot_data.get("weak_reward_thresholds") or [])
+            self.strong_reward_checks = bool(self.slot_data.get("strong_reward_checks", False))
+            self.strong_reward_thresholds = list(
+                self.slot_data.get("strong_reward_thresholds") or []
             )
             self.goal = self.slot_data.get("goal", "all_bosses")
             self.goal_groups = self.slot_data.get("goal_groups") or []
@@ -676,6 +759,9 @@ class NightreignContext(CommonContext):
                 with open(self.run_state_path, "r", encoding="utf-8") as f:
                     data = json.load(f)
                 self.checked_location_ids = {int(x) for x in data.get("checked_locations", [])}
+                self.win_count = int(data.get("win_count", 0))
+                self.weak_reward_counts = _counts_from_json(data.get("weak_reward_counts", []))
+                self.strong_reward_counts = _counts_from_json(data.get("strong_reward_counts", []))
                 self._delivered_weapon_keys = {
                     (int(index), int(player))
                     for index, player in data.get("delivered_weapon_keys", [])
@@ -689,10 +775,16 @@ class NightreignContext(CommonContext):
                     "Could not read existing Nightreign run state at %s: %s", self.run_state_path, e
                 )
                 self.checked_location_ids = set()
+                self.win_count = 0
+                self.weak_reward_counts = {}
+                self.strong_reward_counts = {}
                 self._delivered_weapon_keys = set()
                 self._delivered_talisman_keys = set()
         else:
             self.checked_location_ids = set()
+            self.win_count = 0
+            self.weak_reward_counts = {}
+            self.strong_reward_counts = {}
             self._delivered_weapon_keys = set()
             self._delivered_talisman_keys = set()
             self._write_run_state(seed_name, slot_name, events=[])
@@ -704,6 +796,9 @@ class NightreignContext(CommonContext):
             "seed_name": seed_name,
             "slot_name": slot_name,
             "checked_locations": sorted(self.checked_location_ids),
+            "win_count": self.win_count,
+            "weak_reward_counts": _counts_to_json(self.weak_reward_counts),
+            "strong_reward_counts": _counts_to_json(self.strong_reward_counts),
             "delivered_weapon_keys": sorted(list(key) for key in self._delivered_weapon_keys),
             "delivered_talisman_keys": sorted(list(key) for key in self._delivered_talisman_keys),
             "events": events,
@@ -721,10 +816,13 @@ class NightreignContext(CommonContext):
         except (FileNotFoundError, json.JSONDecodeError, OSError):
             data = {
                 "seed_name": seed_name, "slot_name": slot_name,
-                "checked_locations": [], "delivered_weapon_keys": [],
+                "checked_locations": [], "win_count": 0, "delivered_weapon_keys": [],
                 "delivered_talisman_keys": [], "events": [],
             }
         data["checked_locations"] = sorted(self.checked_location_ids)
+        data["win_count"] = self.win_count
+        data["weak_reward_counts"] = _counts_to_json(self.weak_reward_counts)
+        data["strong_reward_counts"] = _counts_to_json(self.strong_reward_counts)
         data["delivered_weapon_keys"] = sorted(list(key) for key in self._delivered_weapon_keys)
         data["delivered_talisman_keys"] = sorted(
             list(key) for key in self._delivered_talisman_keys
@@ -867,6 +965,57 @@ class NightreignContext(CommonContext):
                     elif in_hub is False and self._hub_exit_time is None:
                         self._hub_exit_time = time.monotonic()
 
+                if in_hub:
+                    # Back in the hub (or a fresh/unreadable tick before the first Expedition
+                    # entry this connection) - reset so a stale reading from the previous
+                    # Expedition can't produce a false edge/delta on the next one (these all
+                    # reset to 0/DAY_PHASE_DAY_1 at the start of each real Expedition anyway).
+                    self._last_day_phase = None
+                    self._last_weak_reward_raw = None
+                    self._last_strong_reward_raw = None
+                elif in_hub is False:
+                    extra_check_timestamp = datetime.now(timezone.utc).isoformat()
+
+                    # Night 1/Night 2 Clear are universal (no toggle) - always read, unlike the
+                    # weak/strong reward reads below, which stay opt-in.
+                    day_phase = self.reader.read_day_phase()
+                    if day_phase is not None:
+                        if self._last_day_phase == DAY_PHASE_NIGHT_1 and day_phase == DAY_PHASE_DAY_2:
+                            await self._credit_night_phase_check(
+                                location_name_night1, "night1_clear", extra_check_timestamp,
+                            )
+                        if self._last_day_phase == DAY_PHASE_NIGHT_2 and day_phase == DAY_PHASE_DAY_3:
+                            await self._credit_night_phase_check(
+                                location_name_night2, "night2_clear", extra_check_timestamp,
+                            )
+                        self._last_day_phase = day_phase
+
+                    if self.weak_reward_checks:
+                        weak_raw = self.reader.read_weak_reward_count()
+                        if weak_raw is not None:
+                            if (self._last_weak_reward_raw is not None
+                                    and weak_raw > self._last_weak_reward_raw):
+                                await self._credit_extra_check(
+                                    self.weak_reward_counts, location_name_weak_reward,
+                                    self.weak_reward_thresholds, "weak_reward",
+                                    extra_check_timestamp,
+                                    increment=weak_raw - self._last_weak_reward_raw,
+                                )
+                            self._last_weak_reward_raw = weak_raw
+
+                    if self.strong_reward_checks:
+                        strong_raw = self.reader.read_strong_reward_count()
+                        if strong_raw is not None:
+                            if (self._last_strong_reward_raw is not None
+                                    and strong_raw > self._last_strong_reward_raw):
+                                await self._credit_extra_check(
+                                    self.strong_reward_counts, location_name_strong_reward,
+                                    self.strong_reward_thresholds, "strong_reward",
+                                    extra_check_timestamp,
+                                    increment=strong_raw - self._last_strong_reward_raw,
+                                )
+                            self._last_strong_reward_raw = strong_raw
+
                 if (
                     (self.randomize_weapons or self.randomize_talismans)
                     and in_hub is False
@@ -970,10 +1119,149 @@ class NightreignContext(CommonContext):
                 logger.exception("Error in Nightreign poll loop")
             await asyncio.sleep(POLL_INTERVAL)
 
+    def _resolve_win_context(self) -> Optional[tuple]:
+        """Reads boss_id/everdark/character together and returns (nightlord, everdark, character)
+        when a check-worthy Nightlord (and, in per_character_checks mode, character) is currently
+        resolvable - None otherwise. Mirrors the gating at the top of _handle_win, but reusable by
+        the Night 1/Night 2/weak/strong reward tracks below, which fire from poll_loop
+        independently of the win pulse _handle_win itself reacts to."""
+        boss = self.reader.read_boss_id()
+        if boss.status != "matched":
+            return None
+        everdark = bool(self.reader.read_everdark_flag())
+        is_everdark = everdark and boss.name in EVERDARK_NIGHTLORDS
+        if everdark and not is_everdark:
+            return None
+        if is_everdark and boss.name not in self.everdark_nightlords:
+            return None
+        character_name = self.reader.read_character_class_name()
+        if self.per_character_checks and character_name is None:
+            return None
+        return boss.name, is_everdark, (character_name if self.per_character_checks else None)
+
+    def _access_owned(self, nightlord: str, everdark: bool, character: Optional[str]) -> bool:
+        """True if this slot has already earned access to `nightlord` (or its Everdark Sovereign)
+        and, when per_character_checks and character is not None, to `character` too - mirrors
+        _handle_win's own gate_boss_access/gate_character_access checks, reused by the Night 1/
+        Night 2/weak/strong reward tracks below since they fire independently of that method."""
+        owned = self._owned_item_names()
+        if character is not None and self.gate_character_access:
+            if f"{character} Character Access" not in owned:
+                return False
+        if self.gate_boss_access:
+            access_name = f"Everdark {nightlord} Access" if everdark else f"{nightlord} Access"
+            if access_name not in owned:
+                return False
+        return True
+
+    async def _credit_threshold(
+        self, new_total: int, thresholds: list, name_fn, event_type: str,
+    ) -> None:
+        """Shared cumulative-counter crediting logic used by win_count and the weak/strong reward
+        tracks (via _credit_extra_check below) - NOT used by nightlord bonus checks or Night 1/
+        Night 2 Clear, neither of which is a cumulative counter (see _handle_win's dedicated bonus-
+        sending block and _credit_single_check instead). Walks `thresholds` up to new_total (not
+        just the one just crossed, so a stale/
+        hand-edited run state file can never leave an earlier threshold's check permanently
+        un-sent) and sends any not yet in self.checked_location_ids. name_fn(count) must return
+        that threshold's location name. Callers are responsible for updating their own counter and
+        appending their own per-tick run-state event before calling this - this only handles the
+        threshold-crossing side effect (logging + check_locations), not the raw-tick bookkeeping,
+        since that bookkeeping's shape (and whether it fires unconditionally) differs per family."""
+        newly_earned = []  # (location_id, name)
+        for threshold in thresholds:
+            if threshold > new_total:
+                break
+            name = name_fn(threshold)
+            location_id = location_name_to_id.get(name)
+            if location_id is not None and location_id not in self.checked_location_ids:
+                self.checked_location_ids.add(location_id)
+                newly_earned.append((location_id, name))
+        if not newly_earned:
+            return
+        for _location_id, name in newly_earned:
+            logger.info("%s threshold reached: %s (total=%s)", event_type, name, new_total)
+        await self.check_locations([location_id for location_id, _name in newly_earned])
+
+    async def _credit_extra_check(
+        self, counts: dict, name_fn, thresholds: list, event_type: str, timestamp: str,
+        increment: int = 1,
+    ) -> None:
+        """Shared body for the weak/strong reward tracks (the only two extra check families that
+        are genuinely cumulative counters): resolves the current Nightlord/character/everdark
+        context (_resolve_win_context) and, only if this slot has actually earned access to it
+        (_access_owned), advances the matching `counts` entry by `increment` (a reward counter's
+        raw delta since the last poll), appends a run-state event for the raw tick (same "log every
+        tick" fidelity as _handle_win_count below), and credits any newly-crossed threshold via
+        _credit_threshold. A no-op if the context can't be resolved, isn't owned yet, or
+        `thresholds` is empty (the family's toggle is off) - same posture as _handle_win's own
+        locked_boss_win_skipped/locked_character_win_skipped guards."""
+        if not thresholds:
+            return
+        ctx = self._resolve_win_context()
+        if ctx is None:
+            return
+        nightlord, everdark, character = ctx
+        if not self._access_owned(nightlord, everdark, character):
+            return
+        key = (nightlord, character, everdark)
+        new_total = counts.get(key, 0) + increment
+        counts[key] = new_total
+        self._append_event({
+            "timestamp": timestamp, "type": event_type, "key": list(key), "total": new_total,
+        })
+        await self._credit_threshold(
+            new_total, thresholds,
+            lambda count, nightlord=nightlord, character=character, everdark=everdark:
+                name_fn(nightlord, count, character, everdark),
+            event_type,
+        )
+
+    async def _credit_single_check(self, name: str, event_type: str, timestamp: str) -> None:
+        """Sends one non-cumulative location once - self.checked_location_ids alone prevents a
+        repeat event from re-sending it, the same way the base "Defeat X"/nightlord-bonus locations
+        already rely on that set rather than a counter. Used by _credit_night_phase_check below."""
+        location_id = location_name_to_id.get(name)
+        if location_id is None or location_id in self.checked_location_ids:
+            return
+        self.checked_location_ids.add(location_id)
+        logger.info("%s check sent: %s", event_type, name)
+        self._append_event({"timestamp": timestamp, "type": event_type, "location": name})
+        await self.check_locations([location_id])
+
+    async def _credit_night_phase_check(self, name_fn, event_type: str, timestamp: str) -> None:
+        """Shared body for the Night 1/Night 2 Clear checks - each Nightlord/character/everdark
+        combo has exactly one location (not a cumulative counter, unlike weak/strong reward above),
+        sent via _credit_single_check once this slot has both a resolvable context
+        (_resolve_win_context) and access to it (_access_owned). Universal - always called, no
+        toggle gates this family (see game_data.py's DAY_PHASE_* constants)."""
+        ctx = self._resolve_win_context()
+        if ctx is None:
+            return
+        nightlord, everdark, character = ctx
+        if not self._access_owned(nightlord, everdark, character):
+            return
+        await self._credit_single_check(name_fn(nightlord, character, everdark), event_type, timestamp)
+
+    async def _handle_win_count(self, timestamp: str) -> None:
+        """Increments this seed's cumulative win count and sends any newly-crossed threshold's
+        location. Deliberately independent of gate_boss_access/gate_character_access/
+        per_character_checks/included_nightlords/included_characters below - a win-count threshold
+        isn't tied to any specific boss or character, so every real win counts toward it the same
+        way Deadlock's own ungated wins_total does."""
+        self.win_count += 1
+        self._append_event({"timestamp": timestamp, "type": "win_count", "win_count": self.win_count})
+        await self._credit_threshold(
+            self.win_count, self.win_count_thresholds, location_name_win_count, "win_count",
+        )
+
     async def _handle_win(self) -> None:
         boss = self.reader.read_boss_id()
         character_name = self.reader.read_character_class_name()
         timestamp = datetime.now(timezone.utc).isoformat()
+
+        if self.win_count_checks and boss.status == "matched":
+            await self._handle_win_count(timestamp)
 
         if self.per_character_checks and character_name is None:
             logger.warning("Detected a win, but couldn't read the character class - skipping "
@@ -1094,6 +1382,30 @@ class NightreignContext(CommonContext):
             "location": name,
         })
         await self.check_locations([location_id])
+
+        # Universal, no toggle: sends the 4 bonus locations (game_data.NIGHTLORD_BONUS_INDICES)
+        # together with this same win, against the exact same boss/character/everdark combination
+        # this slot already earned that win against - reuses every gating check already passed
+        # above, so no further access_owned check is needed here. NOT a cumulative counter: this
+        # runs on every valid win, but self.checked_location_ids (below) already prevents a repeat
+        # defeat of the same combination from re-sending anything, the same way the base
+        # "Defeat X" location above never re-fires either.
+        character_key = character_name if self.per_character_checks else None
+        bonus_sent = []  # (location_id, name)
+        for index in NIGHTLORD_BONUS_INDICES:
+            bonus_name = location_name_kill_bonus(boss.name, index, character_key, is_everdark_win)
+            bonus_id = location_name_to_id.get(bonus_name)
+            if bonus_id is not None and bonus_id not in self.checked_location_ids:
+                self.checked_location_ids.add(bonus_id)
+                bonus_sent.append((bonus_id, bonus_name))
+        if bonus_sent:
+            for _bonus_id, bonus_name in bonus_sent:
+                logger.info("Nightlord bonus check sent: %s", bonus_name)
+            self._append_event({
+                "timestamp": timestamp, "type": "nightlord_bonus",
+                "locations": [name for _bonus_id, name in bonus_sent],
+            })
+            await self.check_locations([bonus_id for bonus_id, _name in bonus_sent])
 
     def print_status(self) -> None:
         """Prints the current live readings from the memory reader, for debugging.

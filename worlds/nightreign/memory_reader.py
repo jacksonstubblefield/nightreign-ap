@@ -143,6 +143,26 @@ CHARACTER_CLASS_OFFSET = 0xE8
 # and this same struct's +0xFA byte, a UI-interaction counter) ruled out first.
 EVERDARK_FLAG_OFFSET = 0xE0
 
+# GameDataMan-relative byte: the day/night phase index (see game_data.py's DAY_PHASE_* constants
+# for the full cycle and how Night 1/Night 2 clear checks are derived from its transitions).
+# Confirmed live across two expeditions; resets to 0 at the start of each new expedition, same
+# lifecycle as EVERDARK_FLAG_OFFSET/BOSS_ID_OFFSET.
+DAY_NIGHT_PHASE_OFFSET = 0x00DE
+
+# GameDataMan-relative bytes: monotonic per-expedition pickup counters for "Weak"/"Strong" reward
+# tier POI clears (the game's own naming, confirmed via the Fextralife wiki - see nightreign-roadmap
+# memory). These count every reward-tier pickup during the current expedition, not just the final
+# boss - fire on item PICKUP, not on the kill blow (a cleared POI's counter doesn't move until the
+# player actually walks over and grabs the dropped orb). Resets to 0 at the start of each new
+# expedition, same lifecycle as the offsets above.
+#
+# KNOWN ISSUE, live-confirmed: also fires on ANY weapon pickup, not just genuine reward-tier POI
+# clears - including this world's own randomized weapon drops (see game_data.py's
+# REWARD_CHECK_THRESHOLDS comment for the full writeup). Not a reliable POI-tier-clear signal as
+# currently understood - client.py's weak_reward_checks/strong_reward_checks default to off.
+WEAK_REWARD_COUNTER_OFFSET = 0x0194
+STRONG_REWARD_COUNTER_OFFSET = 0x0604
+
 UNKNOWN_BOSS_MESSAGE = (
     "boss_id {boss_id} not found - please report this to the mod owner "
     "with your Expedition's Nightlord"
@@ -530,6 +550,31 @@ class NightreignMemoryReader:
         if flag is None:
             return None
         return bool(flag)
+
+    def read_day_phase(self) -> Optional[int]:
+        """Raw day/night phase index (see game_data.DAY_PHASE_* constants), or None if unreadable
+        (including from the pre-launch Target menu, before an expedition is actually entered -
+        same lifecycle as read_boss_id()/read_everdark_flag())."""
+        base = self._read_gamedataman_base()
+        if base is None:
+            return None
+        return self._safe_read_ubyte(base + DAY_NIGHT_PHASE_OFFSET)
+
+    def read_weak_reward_count(self) -> Optional[int]:
+        """Raw monotonic count of Weak-tier reward pickups so far this expedition, or None if
+        unreadable - see WEAK_REWARD_COUNTER_OFFSET."""
+        base = self._read_gamedataman_base()
+        if base is None:
+            return None
+        return self._safe_read_ubyte(base + WEAK_REWARD_COUNTER_OFFSET)
+
+    def read_strong_reward_count(self) -> Optional[int]:
+        """Raw monotonic count of Strong-tier reward pickups so far this expedition, or None if
+        unreadable - see STRONG_REWARD_COUNTER_OFFSET."""
+        base = self._read_gamedataman_base()
+        if base is None:
+            return None
+        return self._safe_read_ubyte(base + STRONG_REWARD_COUNTER_OFFSET)
 
     def read_hub_state(self) -> Optional[bool]:
         """True if in hub/menu/loading, False if in an active run, None if unreadable."""

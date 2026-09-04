@@ -32,13 +32,13 @@ import pymem.exception
 import pymem.process
 
 try:
-    from .game_data import EFFECT_CAP_MAP
+    from .item_data import EFFECT_CAP_MAP
 except ImportError:
     import os
     import sys
 
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    from game_data import EFFECT_CAP_MAP  # type: ignore[no-redef]
+    from item_data import EFFECT_CAP_MAP  # type: ignore[no-redef]
 
 try:
     from .memory_reader import ItemDropTargets

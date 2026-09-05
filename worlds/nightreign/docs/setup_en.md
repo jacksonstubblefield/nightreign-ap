@@ -20,13 +20,7 @@ progression won't be visible. The same applies to `gate_character_access` (off b
 for playable characters - if you turn it on, start from a save where not every character is already unlocked.
 
 ## Playing Offline
-Launch the game offline (disconnect from the internet, or use Steam's offline mode) before connecting the client.
-This project reads and writes the game's live memory, which requires Anti-Cheat to be disabled (see below) - Anti-
-Cheat only runs during an online session, so playing offline is what makes running without it possible in the
-first place, and is required every time you play with this client, not just a one-time setup step.
-
-## Turning off Anti-Cheat
-This can't be run with Anti-Cheat because it modifies the game's memory. If you run this with EAC enabled and while online, the Nightreign client will instantly close itself.
+The game must be launched offline or the client will refuse to open. Selecting the "play offline" option within the menu is insufficient - since this implementation reads and writes data, it can only be play with EAC disabled. 
 
 ## Other Mods
 Play with other mods at your own risk - given how early access this is, this should be compatible with mods.

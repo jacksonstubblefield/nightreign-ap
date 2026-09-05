@@ -1,13 +1,13 @@
 # Archipelago - Elden Ring Nightreign
 
 This is an [Archipelago](https://archipelago.gg/) implementation for **Elden Ring Nightreign**, currently in
-**early alpha**. See [worlds/nightreign/docs/en_Nightreign.md](worlds/nightreign/docs/en_Nightreign.md) for what the
-randomizer does, and [worlds/nightreign/docs/setup_en.md](worlds/nightreign/docs/setup_en.md) for setup instructions.
+**alpha**. See [Overview](worlds/nightreign/docs/en_Nightreign.md) for what the
+client does, and [setup](worlds/nightreign/docs/setup_en.md) for setup instructions.  Check out our [roadmap](worlds/nightreign/docs/roadmap.md).
 
 ## Status
 
-This is an early-alpha, tracker-only integration. DLC content and the Everdark Sovereigns are not yet fully
-implemented.
+This is an alpha, currently getting feedback on the core implementation to make something everyone enjoys.
+
 
 ## Running the Client
 

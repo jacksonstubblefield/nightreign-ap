@@ -37,11 +37,26 @@ MAPITEMMAN_AOB_OFFSET = 0x11
 # unlike GameDataMan/MapItemMan which turned out to be reward/pickup-focused.
 WORLDCHRMAN_AOB = "48 8B 05 ?? ?? ?? ?? 0F 28 F1 48 85 C0"
 
+# Same zero-offset pointer-slot shape, ported from the user's own CE table (not previously in
+# game_data.py/memory_reader.py - new for the POI-completion spike). Ruled out for this purpose:
+# a controlled trash-mob-kill negative control showed this manager's busy region reacts to any
+# nearby combat generically, not specifically to POI completion (see roadmap memory).
+FIELDAREA_AOB = "48 8B 05 ?? ?? ?? ?? 48 85 C0 ?? ?? ?? ?? ?? ?? 4C 8B 68"
+
+# Zero-offset pointer-slot shape, ported from the user's own CE table. Owns the UI popup-banner
+# system (a working CE script calls a "popupMessageCall" function with this manager's pointer plus
+# an eventId to trigger banners like "Demigod felled"/"Objective Achieved") - candidate for where a
+# POI-clear banner's eventId might be readable passively, since banners fire once per encounter
+# regardless of how many entities were involved (unlike per-entity signals).
+MENUMAN_AOB = "48 8B 0D ?? ?? ?? ?? 83 79 48 00 ?? ?? ?? ?? ?? ?? 49 8B 85 B8 01 00 00 48 8B 88 88 00 00 00 E8"
+
 AOB_TARGETS = {
     "gameman": GAMEMAN_AOB,
     "gamedataman": GAMEDATAMAN_AOB,
     "mapitemman": MAPITEMMAN_AOB,
     "worldchrman": WORLDCHRMAN_AOB,
+    "fieldarea": FIELDAREA_AOB,
+    "menuman": MENUMAN_AOB,
 }
 
 AOB_OFFSETS = {

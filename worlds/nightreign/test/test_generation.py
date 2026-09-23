@@ -22,9 +22,8 @@ from worlds.nightreign.Locations import (location_name, location_name_boss_only,
                                           location_name_night2, location_name_strong_reward,
                                           location_name_weak_reward)
 
-# All base Nightlords plus every Everdark Sovereign entry (e.g. "Everdark Tricephalos") - used by
-# tests exercising Everdark checks, since IncludedNightlords excludes Everdark entries by default
-# (see Options.py's IncludedNightlords).
+# All base Nightlords plus every Everdark Sovereign entry (e.g. "Everdark Tricephalos") - the
+# IncludedNightlords default, spelled out explicitly by tests exercising Everdark checks.
 ALL_NIGHTLORDS_WITH_EVERDARK = list(ALL_NIGHTLORD_ENTRIES)
 
 
@@ -500,12 +499,37 @@ class NightreignStartingBossEverdarkWithoutChecksTest(WorldTestBase):
     auto_construct = False
     options = {
         "starting_boss": "everdark_tricephalos",
-        # default included_nightlords has no "Everdark X" entries at all.
+        "included_nightlords": frozenset(NIGHTLORDS),  # no "Everdark X" entries at all.
     }
 
     def test_everdark_starting_boss_requires_everdark_entry_in_included_nightlords(self) -> None:
         with self.assertRaises(OptionError):
             self.world_setup()
+
+
+class NightreignRandomStartingBossTest(WorldTestBase):
+    # "random" used to draw from every StartingBoss value, everdark_* included, and then fail
+    # generation whenever it landed on an Everdark Sovereign absent from included_nightlords
+    # (the default). It must now only pick among this slot's included entries.
+    game = "Elden Ring Nightreign"
+    auto_construct = False
+
+    def _roll(self, included: frozenset) -> None:
+        for seed in range(50):
+            with self.subTest(seed=seed):
+                self.options = {"starting_boss": "random", "included_nightlords": included,
+                                "goal": "all_bosses"}
+                self.world_setup(seed)
+                name = (f"Everdark {self.world.starting_boss}" if self.world.starting_boss_everdark
+                        else self.world.starting_boss)
+                self.assertIn(name, included)
+
+    def test_random_never_picks_excluded_everdark(self) -> None:
+        # Base Nightlords only (the pre-Everdark-default setup the bug was reported against).
+        self._roll(frozenset(NIGHTLORDS))
+
+    def test_random_respects_included_subset(self) -> None:
+        self._roll(frozenset({"Gaping Jaw", "Everdark Augur"}))
 
 
 # --- Nightlord Bonus checks (universal, no toggle) ---

@@ -58,7 +58,7 @@ class NightreignWorld(World):
     starting_character is gated behind receiving that character's Character Access item, and with
     bosses_with_characters set to boss_and_character, a win as a not-yet-unlocked character also
     doesn't send its check. Each Everdark Sovereign is its own separate entry in
-    included_nightlords (e.g. "Everdark Tricephalos", excluded by default) - defeating one is a
+    included_nightlords (e.g. "Everdark Tricephalos", included by default) - defeating one is a
     separate, optional location, never required for the goal, since Everdark availability depends
     on an external weekly rotation this world can't unlock or guarantee (see Options.py's
     IncludedNightlords disclaimer). Everdark Sovereigns are treated as entirely separate bosses
@@ -133,6 +133,18 @@ class NightreignWorld(World):
         # below depends on starting_boss_everdark: picking "everdark_tricephalos" frees Everdark
         # Tricephalos only, leaving base Tricephalos just as gated as any other Nightlord.
         starting_boss_value = self.options.starting_boss.value
+        if self.options.starting_boss.randomized:
+            # "random" only picks among entries this slot's included_nightlords actually has, so it
+            # can never land on an excluded Everdark Sovereign and trip the OptionError below.
+            included = self.options.included_nightlords.value
+            candidates = (
+                [i for i, name in enumerate(NIGHTLORDS) if name in included]
+                + [len(NIGHTLORDS) + i for i, name in enumerate(EVERDARK_NIGHTLORDS)
+                   if f"Everdark {name}" in included]
+            )
+            if candidates:
+                starting_boss_value = self.random.choice(candidates)
+                self.options.starting_boss.value = starting_boss_value
         self.starting_boss_everdark = starting_boss_value >= len(NIGHTLORDS)
         self.starting_boss = (
             EVERDARK_NIGHTLORDS[starting_boss_value - len(NIGHTLORDS)] if self.starting_boss_everdark

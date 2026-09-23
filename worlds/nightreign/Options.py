@@ -25,14 +25,15 @@ class IncludedNightlords(OptionSet):
     """Which Nightlords to generate location checks for. Each Everdark Sovereign is its own
     separate entry (e.g. "Everdark Tricephalos") - Everdark Sovereigns are entirely separate
     bosses from their base Nightlord (own check, own Access item), so add one explicitly to
-    include its check; it is NOT implied by including the base Nightlord. Excluded by default,
-    since reaching a specific Everdark Sovereign depends on an external weekly rotation this world
-    can't unlock or guarantee - the actual availability is on you, the player.
+    include its check; it is NOT implied by including the base Nightlord. All included by default.
+    Everdark checks are never required for the goal, since reaching a specific Everdark Sovereign
+    depends on an external weekly rotation this world can't unlock or guarantee - the actual
+    availability is on you, the player. Remove the "Everdark X" entries to leave them out.
     """
 
     display_name = "Included Nightlords"
     valid_keys = frozenset(ALL_NIGHTLORD_ENTRIES)
-    default = frozenset(NIGHTLORDS)
+    default = frozenset(ALL_NIGHTLORD_ENTRIES)
 
 
 class BossesWithCharacters(Choice):
@@ -71,6 +72,18 @@ class StartingBoss(Choice):
     option_everdark_fissure_in_the_fog = 16
     option_everdark_balancers = 17
     default = 0
+
+    # Set when the player's YAML said "random" (including a weighted pick that landed on "random").
+    # Choice.from_text resolves "random" over every option value, everdark_* included, before
+    # included_nightlords is known - so __init__.py's generate_early() re-rolls with self.random
+    # over only this slot's included entries instead of trusting that pick.
+    randomized: bool = False
+
+    @classmethod
+    def from_text(cls, text: str) -> "StartingBoss":
+        option = super().from_text(text)
+        option.randomized = text.lower() == "random"
+        return option
 
 
 # option_* values above are positionally mapped to game_data.NIGHTLORDS order (world code resolves

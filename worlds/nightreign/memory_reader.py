@@ -36,6 +36,9 @@ try:
         KNOWN_BOSS_IDS,
         MAPITEMMAN_AOB,
         MAPITEMMAN_AOB_OFFSET,
+        MURK_GRANT_AOB,
+        RUNES_GRANT_AOB,
+        SOVEREIGN_SIGIL_GRANT_AOB,
         TLS_FAKE_CONTEXT_RVA,
         TLS_SLOT_FETCHER_ITEMDROP_AOB,
         UNSET_SENTINEL,
@@ -61,6 +64,9 @@ except ImportError:
         KNOWN_BOSS_IDS,
         MAPITEMMAN_AOB,
         MAPITEMMAN_AOB_OFFSET,
+        MURK_GRANT_AOB,
+        RUNES_GRANT_AOB,
+        SOVEREIGN_SIGIL_GRANT_AOB,
         TLS_FAKE_CONTEXT_RVA,
         TLS_SLOT_FETCHER_ITEMDROP_AOB,
         UNSET_SENTINEL,
@@ -410,6 +416,35 @@ class NightreignMemoryReader:
             aboba_func_addr=aboba_func_addr,
             tls_fake_context_addr=tls_fake_context_addr,
         )
+
+    def resolve_currency_target(self, currency: str) -> int:
+        """Resolves the grant-function entry point for one currency ("Murk"/"Runes"/
+        "Sovereign Sigil" - see game_data.CURRENCY_COUNTER_OFFSETS) for memory_writer.py's
+        NightreignCurrencyWriter. Resolved one currency at a time so a patch breaking one AOB only
+        disables that currency, not the others. Same call-only-when-wanted convention as
+        resolve_event_flag_targets()."""
+        if not self.connected:
+            raise PointerNotFoundError("not connected - call connect() first")
+        aob = {
+            "Murk": MURK_GRANT_AOB,
+            "Runes": RUNES_GRANT_AOB,
+            "Sovereign Sigil": SOVEREIGN_SIGIL_GRANT_AOB,
+        }[currency]
+        return self._resolve_function_address(self.pm, aob)
+
+    def read_player_data_base(self) -> Optional[int]:
+        """Live PlayerGameData address ([GameDataMan+0x8]) - the first argument every currency
+        grant function takes, re-read per call. None if unreadable (e.g. a scene transition, or
+        the main menu before any save is loaded)."""
+        return self._read_player_data_base()
+
+    def read_player_data_uint(self, offset: int) -> Optional[int]:
+        """A uint32 at PlayerGameData+offset (e.g. game_data.MURK_COUNTER_OFFSET), or None if
+        unreadable."""
+        base = self._read_player_data_base()
+        if base is None:
+            return None
+        return self._safe_read_uint(base + offset)
 
     def resolve_current_animation_target(self) -> int:
         """Resolves the WorldChrMan pointer slot for read_current_animation() - see

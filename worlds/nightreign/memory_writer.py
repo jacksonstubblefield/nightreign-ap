@@ -136,6 +136,49 @@ class NightreignMemoryWriter:
         return True
 
 
+class NightreignCurrencyWriter:
+    """Grants Murk/Runes/Sovereign Sigils in a running nightreign.exe - the write primitive
+    behind Archipelago's currency filler. Ported from the CT table's "Give Murk"/"Give Runes
+    [Expedition]"/"Give Sovereign Sigil" scripts, each `executeCodeEx(fn, [GameDataMan]+8,
+    amount)` - a 2-argument call, so this reuses the EventFlag trampoline above as-is (its third
+    register, r8, is just passed 0 and ignored).
+
+    Construct with {item name: function address} from NightreignMemoryReader's
+    resolve_currency_target(), only for the currencies that actually resolved. Same blocking/
+    threading caveat as NightreignMemoryWriter.set_event_flag: call via loop.run_in_executor.
+    """
+
+    def __init__(self, pm: pymem.Pymem, func_addrs: dict[str, int]):
+        self.pm = pm
+        self._func_addrs = dict(func_addrs)
+        self._trampoline_addrs: dict[str, int] = {}
+        self._param_addr: Optional[int] = None
+
+    def supports(self, currency: str) -> bool:
+        return currency in self._func_addrs
+
+    def grant(self, currency: str, player_data_addr: int, amount: int) -> bool:
+        """Adds `amount` of `currency` to the PlayerGameData at player_data_addr
+        (re-read by the caller right before this call - see memory_reader.py's
+        read_player_data_base()). Returns True once the remote thread was dispatched and ran to
+        completion - NOT that the grant is confirmed, same provisional-success caveat as
+        set_event_flag."""
+        if currency not in self._trampoline_addrs:
+            code = _build_trampoline(self._func_addrs[currency])
+            addr = self.pm.allocate(len(code))
+            self.pm.write_bytes(addr, code, len(code))
+            self._trampoline_addrs[currency] = addr
+        if self._param_addr is None:
+            self._param_addr = self.pm.allocate(24)
+        params = struct.pack("<QQQ", player_data_addr, amount, 0)
+        try:
+            self.pm.write_bytes(self._param_addr, params, len(params))
+        except (pymem.exception.MemoryWriteError, pymem.exception.WinAPIError):
+            return False
+        self.pm.start_thread(self._trampoline_addrs[currency], params=self._param_addr)
+        return True
+
+
 # Original vs. patched bytes at ACCESS_ALL_BOSSES_JZ_OFFSET - `jz +7` (skip revealing this boss in
 # the menu unless already unlocked) vs two NOPs (always fall through to "revealed").
 _ALL_BOSSES_LOCKED_BYTES = bytes.fromhex("7407")

@@ -2,7 +2,8 @@ from typing import NamedTuple
 
 from BaseClasses import Item, ItemClassification
 
-from .game_data import ACCESS_CHARACTERS, ACCESS_NIGHTLORDS, EVERDARK_NIGHTLORDS, NIGHTLORDS
+from .game_data import (ACCESS_CHARACTERS, ACCESS_NIGHTLORDS, CURRENCY_BUNDLES, EVERDARK_NIGHTLORDS,
+                        NIGHTLORDS)
 
 
 class NightreignItem(Item):
@@ -58,6 +59,17 @@ item_table = {
         ItemClassification.progression,
     )
     for i, name in enumerate(EVERDARK_NIGHTLORDS)
+} | {
+    # Currency filler (see game_data.CURRENCY_BUNDLES), gated per currency by its receive_*
+    # option (see __init__.py's get_filler_item_name) and granted client-side via a direct
+    # game-function call rather than a ground drop (see client.py's _deliver_pending_currency).
+    # Appended after everything above (ids continue sequentially) to avoid disturbing any existing
+    # seed's item ids.
+    name: ItemData(
+        BASE_ID + len(NIGHTLORDS) + len(ACCESS_NIGHTLORDS) + 2 + len(ACCESS_CHARACTERS)
+        + len(EVERDARK_NIGHTLORDS) + i
+    )
+    for i, name in enumerate(CURRENCY_BUNDLES)
 }
 
 # get_filler_item_name() must only ever choose from FILLER_ITEM_NAMES, not item_table's full key

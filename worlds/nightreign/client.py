@@ -34,7 +34,12 @@ function needs a grounded position, so this is checked every poll tick, not
 just once on Expedition entry). Delivery is also withheld (not lost - just retried on a later run)
 for the whole run whenever _current_run_is_locked() says the current boss/character isn't actually
 unlocked for this slot yet, so an earned weapon/talisman drop is never spent on a run that
-_handle_win would refuse to send a check for anyway. When unlock_all_bosses_in_game is on, every
+_handle_win would refuse to send a check for anyway. receive_murk/receive_runes/
+receive_sovereign_sigils filler ("Murk"/"Runes"/"Sovereign Sigil") is granted by calling the game's
+own currency-add functions directly via memory_writer.py's NightreignCurrencyWriter, every pending
+copy of a currency summed into one call - Runes during an Expedition (same settle window and
+locked-run withholding as drops, no grounded requirement), Murk/Sigils in the Roundtable Hold once a
+save is loaded (see _deliver_pending_currency). When unlock_all_bosses_in_game is on, every
 tick spent genuinely in the hub (not the main menu - read_hub_state() alone can't tell those apart,
 see memory_reader.py's is_save_loaded()) re-applies a code patch (memory_reader.ACCESS_ALL_BOSSES_AOB)
 that keeps every boss, including DLC Nightlords and Everdark Sovereigns, selectable in the game's
@@ -95,9 +100,10 @@ from CommonClient import (ClientCommandProcessor, CommonContext, get_base_parser
 from NetUtils import ClientStatus
 
 from .game_data import (ACCESS_CHARACTERS, ACCESS_ITEM_EVENT_FLAGS, ACCESS_NIGHTLORDS,
-                        CHARACTER_ACCESS_EVENT_FLAGS, DAY_PHASE_DAY_2, DAY_PHASE_DAY_3,
-                        DAY_PHASE_NIGHT_1, DAY_PHASE_NIGHT_2, EVERDARK_NIGHTLORDS,
-                        NIGHTLORD_BONUS_INDICES, is_flying_animation, starting_free_characters,
+                        CHARACTER_ACCESS_EVENT_FLAGS, CURRENCY_BUNDLES,
+                        CURRENCY_COUNTER_OFFSETS, CURRENCY_GRANT_MAX,
+                        DAY_PHASE_DAY_2, DAY_PHASE_DAY_3, DAY_PHASE_NIGHT_1, DAY_PHASE_NIGHT_2, EVERDARK_NIGHTLORDS,
+                        NIGHTLORD_BONUS_INDICES, currency_bundle_names, is_flying_animation, starting_free_characters,
                         starting_free_everdark_nightlords, starting_free_nightlords)
 from .item_data import (EFFECT_CAP_MAP, TALISMAN_TABLE, WEAPON_ART_TABLE, WEAPON_TABLE,
                         natural_weapon_tier, roll_effect_tier, roll_upgrade_tier)
@@ -107,7 +113,8 @@ from .Locations import (location_name, location_name_boss_only, location_name_ev
                         location_name_night1, location_name_night2, location_name_strong_reward,
                         location_name_to_id, location_name_weak_reward, location_name_win_count)
 from .memory_reader import EACDetectedError, NightreignMemoryReader, PointerNotFoundError
-from .memory_writer import NightreignItemDropWriter, NightreignMemoryWriter
+from .memory_writer import (NightreignCurrencyWriter, NightreignItemDropWriter,
+                            NightreignMemoryWriter)
 from .overlay import NightreignOverlay
 
 logger = logging.getLogger("NightreignClient")
@@ -120,6 +127,19 @@ BUILD_MISMATCH_BACKOFF = 30
 
 # The fly-in animation
 EXPEDITION_ENTRY_SETTLE_SECONDS = 15
+
+# How long to wait after arriving in the Roundtable Hold before granting Murk/Sovereign Sigils -
+# a margin past the load, same caution as EXPEDITION_ENTRY_SETTLE_SECONDS.
+HUB_ENTRY_SETTLE_SECONDS = 5
+
+# slot_data key -> currency name (see game_data.CURRENCY_COUNTER_OFFSETS). Runes are granted
+# during an Expedition, the other two in the Roundtable Hold - see poll_loop.
+CURRENCY_SLOT_DATA_KEYS = {
+    "receive_murk": "Murk",
+    "receive_runes": "Runes",
+    "receive_sovereign_sigils": "Sovereign Sigil",
+}
+HUB_CURRENCIES = ("Murk", "Sovereign Sigil")
 
 # Item received toast duration
 TOAST_DURATION_SECONDS = 3.0
@@ -175,6 +195,7 @@ class NightreignContext(CommonContext):
     unlock_all_bosses_in_game: bool
     randomize_weapons: bool
     randomize_talismans: bool
+    currency_items: set
     everdark_nightlords: set
     freed_nightlords: set
     freed_everdark_nightlords: set
@@ -197,8 +218,11 @@ class NightreignContext(CommonContext):
     writer: Optional[NightreignMemoryWriter]
     overlay: Optional[NightreignOverlay]
     item_drop_writer: Optional[NightreignItemDropWriter]
+    currency_writer: Optional[NightreignCurrencyWriter]
+    _currency_worldchrman_slot: Optional[int]
     _worldchrman_slot: Optional[int]
     _hub_exit_time: Optional[float]
+    _hub_entry_time: Optional[float]
     _all_bosses_unlock_addr: Optional[int]
     _all_bosses_worldchrman_slot: Optional[int]
 
@@ -207,6 +231,7 @@ class NightreignContext(CommonContext):
     _last_overlay_state: Optional[tuple]
     _delivered_weapon_keys: set
     _delivered_talisman_keys: set
+    _delivered_currency_keys: dict
     _locked_boss_warned: bool
     _locked_character_warned: bool
     _locked_run_drop_withheld_warned: bool
@@ -225,6 +250,7 @@ class NightreignContext(CommonContext):
         self.unlock_all_bosses_in_game = False
         self.randomize_weapons = False
         self.randomize_talismans = False
+        self.currency_items = set()
         self.everdark_nightlords = set()
         self.freed_nightlords = set()
         self.freed_everdark_nightlords = set()
@@ -247,8 +273,11 @@ class NightreignContext(CommonContext):
         self.writer = None
         self.overlay = None
         self.item_drop_writer = None
+        self.currency_writer = None
+        self._currency_worldchrman_slot = None
         self._worldchrman_slot = None
         self._hub_exit_time = None
+        self._hub_entry_time = None
         self._all_bosses_unlock_addr = None
         self._all_bosses_worldchrman_slot = None
         self._last_pulse = None
@@ -256,6 +285,7 @@ class NightreignContext(CommonContext):
         self._last_overlay_state = None
         self._delivered_weapon_keys = set()
         self._delivered_talisman_keys = set()
+        self._delivered_currency_keys = {name: set() for name in CURRENCY_COUNTER_OFFSETS}
         self._locked_boss_warned = False
         self._locked_character_warned = False
         self._locked_run_drop_withheld_warned = False
@@ -299,6 +329,14 @@ class NightreignContext(CommonContext):
             # previously fell back to False regardless of the player's actual YAML settings.
             self.randomize_weapons = bool(self.slot_data.get("receive_weapons", False))
             self.randomize_talismans = bool(self.slot_data.get("receive_talismans", False))
+            self.currency_items = {
+                name for key, name in CURRENCY_SLOT_DATA_KEYS.items()
+                if self.slot_data.get(key, False)
+            }
+            # starting_murk arrives as start-inventory Murk bundles - deliverable through the
+            # same Murk path even when receive_murk (Murk as filler) is off.
+            if self.slot_data.get("starting_murk", 0):
+                self.currency_items.add("Murk")
             self.everdark_nightlords = set(self.slot_data.get("everdark_nightlords") or [])
             # starting_boss_everdark (see Options.py's StartingBoss/__init__.py's generate_early())
             # decides which set the starting_boss name goes into - Everdark Sovereigns are separate
@@ -356,6 +394,7 @@ class NightreignContext(CommonContext):
             # this connect, so build the item-drop writer here too, not just in poll_loop.
             self._ensure_item_drop_ready()
             self._ensure_animation_ready()
+            self._ensure_currency_ready()
             self._ensure_all_bosses_unlock_ready()
 
         if cmd == "ReceivedItems":
@@ -364,6 +403,7 @@ class NightreignContext(CommonContext):
             # No action needed for randomize_weapons/randomize_talismans - _pending_drop_keys()
             # recomputes from self.items_received on every poll_loop hub-exit edge, so a new
             # "Randomized Weapon"/"Talisman" is picked up on the next Expedition entry automatically.
+            # Currency items work the same way (see _deliver_pending_currency).
 
         if cmd == "RoomUpdate":
             # missing_locations is updated (by base on_package handling, before this hook runs)
@@ -736,6 +776,91 @@ class NightreignContext(CommonContext):
             "talisman_drop", "randomized talisman", "Talisman received"
         )
 
+    # --- Currency grant write path (Murk, Runes, Sovereign Sigils) ---
+    # Off unless the matching receive_* option is on. Unlike weapons/talismans, nothing is rolled
+    # or dropped - every pending copy of a currency is summed and granted in one direct call.
+
+    def _receives_in_run_items(self) -> bool:
+        """True if anything is delivered during an Expedition (and so needs _hub_exit_time's
+        settle window tracked) - weapon/talisman drops, or Runes."""
+        return self.randomize_weapons or self.randomize_talismans or "Runes" in self.currency_items
+
+    def _ensure_currency_ready(self) -> None:
+        """Same "build once both an option and the game connection are known" shape as
+        _ensure_item_drop_ready, for the same race-condition reason. Each currency's AOB is
+        resolved independently - a failure only drops that one currency for the session. Also
+        resolves its own WorldChrMan slot (for is_save_loaded(), Murk/Sigils' hub gate), kept
+        separate from _worldchrman_slot for the same reason _all_bosses_worldchrman_slot is."""
+        if not self.currency_items or not self.reader.connected or self.currency_writer is not None:
+            return
+        func_addrs = {}
+        for currency in sorted(self.currency_items):
+            try:
+                func_addrs[currency] = self.reader.resolve_currency_target(currency)
+            except PointerNotFoundError as e:
+                logger.error("%s grant write path unavailable (%s) - disabling it this session, "
+                             "the read-only tracker is unaffected.", currency, e)
+                self.currency_items.discard(currency)
+        if self.currency_items.intersection(HUB_CURRENCIES):
+            try:
+                self._currency_worldchrman_slot = self.reader.resolve_current_animation_target()
+            except PointerNotFoundError as e:
+                logger.error("Save-loaded read path unavailable (%s) - disabling Murk/Sovereign "
+                             "Sigil grants this session.", e)
+                self.currency_items.difference_update(HUB_CURRENCIES)
+                func_addrs = {k: v for k, v in func_addrs.items() if k not in HUB_CURRENCIES}
+        if not func_addrs:
+            return
+        self.currency_writer = NightreignCurrencyWriter(self.reader.pm, func_addrs)
+        logger.info("Currency grant writer resolved for: %s.", ", ".join(sorted(func_addrs)))
+
+    async def _deliver_pending_currency(self, currency: str) -> None:
+        """Grants every received-but-undelivered bundle of `currency` (e.g. every pending "Murk
+        Bundle"/"Large Murk Bundle"/"Titanic Murk Bundle" - see game_data.CURRENCY_BUNDLES) in one
+        call. Same (index, player) dedup keys as _deliver_pending_drops. Marked delivered as soon as the call is
+        dispatched and NEVER retried off the before/after counter read-back - those reads only go
+        to the log: an unconfirmed counter offset that read wrong would otherwise re-grant every
+        tick forever, a far worse failure than one missed grant."""
+        if self.currency_writer is None or not self.currency_writer.supports(currency):
+            return
+        delivered_keys = self._delivered_currency_keys[currency]
+        # (index, player) -> bundle item name, for every pending bundle of this currency.
+        pending = {
+            key: bundle
+            for bundle in currency_bundle_names(currency)
+            for key in self._pending_drop_keys(bundle, delivered_keys)
+        }
+        if not pending:
+            return
+        player_data = self.reader.read_player_data_base()
+        if player_data is None:
+            return  # transiently unreadable - retried next tick
+        amount = min(sum(CURRENCY_BUNDLES[bundle][1] for bundle in pending.values()),
+                     CURRENCY_GRANT_MAX)
+        counter_offset = CURRENCY_COUNTER_OFFSETS[currency]
+        before = self.reader.read_player_data_uint(counter_offset)
+        ok = await asyncio.get_running_loop().run_in_executor(
+            None, self.currency_writer.grant, currency, player_data, amount
+        )
+        if not ok:
+            logger.warning("%s grant skipped - game not ready, will retry.", currency)
+            return
+        delivered_keys.update(pending)
+        after = self.reader.read_player_data_uint(counter_offset)
+        self._append_event({
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "type": "currency_grant",
+            "currency": currency,
+            "amount": amount,
+            "bundles": sorted([index, player, bundle] for (index, player), bundle in pending.items()),
+            "before": before,
+            "after": after,
+        })
+        logger.info("Granted %s %s from %s; counter %s -> %s.", amount, currency,
+                    ", ".join(sorted(pending.values())), before, after)
+        if self.overlay is not None:
+            self._show_toast(f"+{amount:,} {currency}")
+
     # --- Per-run local state file ---
     # One file per AP world/slot (keyed by seed + slot name), so switching multiworld games
     # never mixes up which locations were sent. Also logs wins and unresolved boss_id detections.
@@ -770,6 +895,14 @@ class NightreignContext(CommonContext):
                     (int(index), int(player))
                     for index, player in data.get("delivered_talisman_keys", [])
                 }
+                saved_currency_keys = data.get("delivered_currency_keys", {})
+                self._delivered_currency_keys = {
+                    name: {
+                        (int(index), int(player))
+                        for index, player in saved_currency_keys.get(name, [])
+                    }
+                    for name in CURRENCY_COUNTER_OFFSETS
+                }
             except (json.JSONDecodeError, OSError, ValueError) as e:
                 logger.warning(
                     "Could not read existing Nightreign run state at %s: %s", self.run_state_path, e
@@ -780,6 +913,7 @@ class NightreignContext(CommonContext):
                 self.strong_reward_counts = {}
                 self._delivered_weapon_keys = set()
                 self._delivered_talisman_keys = set()
+                self._delivered_currency_keys = {name: set() for name in CURRENCY_COUNTER_OFFSETS}
         else:
             self.checked_location_ids = set()
             self.win_count = 0
@@ -787,6 +921,7 @@ class NightreignContext(CommonContext):
             self.strong_reward_counts = {}
             self._delivered_weapon_keys = set()
             self._delivered_talisman_keys = set()
+            self._delivered_currency_keys = {name: set() for name in CURRENCY_COUNTER_OFFSETS}
             self._write_run_state(seed_name, slot_name, events=[])
 
         logger.info("Nightreign run state file: %s", self.run_state_path)
@@ -801,10 +936,17 @@ class NightreignContext(CommonContext):
             "strong_reward_counts": _counts_to_json(self.strong_reward_counts),
             "delivered_weapon_keys": sorted(list(key) for key in self._delivered_weapon_keys),
             "delivered_talisman_keys": sorted(list(key) for key in self._delivered_talisman_keys),
+            "delivered_currency_keys": self._currency_keys_to_json(),
             "events": events,
         }
         with open(self.run_state_path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
+
+    def _currency_keys_to_json(self) -> dict:
+        return {
+            name: sorted(list(key) for key in keys)
+            for name, keys in self._delivered_currency_keys.items()
+        }
 
     def _append_event(self, event: dict) -> None:
         if not self.run_state_path:
@@ -827,6 +969,7 @@ class NightreignContext(CommonContext):
         data["delivered_talisman_keys"] = sorted(
             list(key) for key in self._delivered_talisman_keys
         )
+        data["delivered_currency_keys"] = self._currency_keys_to_json()
         data.setdefault("events", []).append(event)
         with open(self.run_state_path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
@@ -845,8 +988,11 @@ class NightreignContext(CommonContext):
                     self.writer = None
                     self._synced_flags.clear()
                     self.item_drop_writer = None
+                    self.currency_writer = None
+                    self._currency_worldchrman_slot = None
                     self._worldchrman_slot = None
                     self._hub_exit_time = None
+                    self._hub_entry_time = None
                     self._all_bosses_unlock_addr = None
                     self._all_bosses_worldchrman_slot = None
                     self._locked_boss_warned = False
@@ -861,6 +1007,7 @@ class NightreignContext(CommonContext):
                                 asyncio.create_task(self._sync_event_flags())
                             self._ensure_item_drop_ready()
                             self._ensure_animation_ready()
+                            self._ensure_currency_ready()
                             self._ensure_all_bosses_unlock_ready()
                         else:
                             await asyncio.sleep(RECONNECT_INTERVAL)
@@ -955,7 +1102,7 @@ class NightreignContext(CommonContext):
                             self._locked_character_warned = True
                             self._warn_if_character_locked(character_name)
 
-                if self.randomize_weapons or self.randomize_talismans:
+                if self._receives_in_run_items():
                     # Tracks how long in_hub has continuously been False, so the settle-time check
                     # below can tell "just exited the hub" from "been in the Expedition a while" -
                     # reset on True so each fresh Expedition gets its own settle window.
@@ -964,6 +1111,21 @@ class NightreignContext(CommonContext):
                         self._locked_run_drop_withheld_warned = False
                     elif in_hub is False and self._hub_exit_time is None:
                         self._hub_exit_time = time.monotonic()
+
+                if self.currency_items.intersection(HUB_CURRENCIES):
+                    if not in_hub:
+                        self._hub_entry_time = None
+                    elif self._hub_entry_time is None:
+                        self._hub_entry_time = time.monotonic()
+                    elif (time.monotonic() - self._hub_entry_time >= HUB_ENTRY_SETTLE_SECONDS
+                          and self._currency_worldchrman_slot is not None
+                          and self.reader.is_save_loaded(self._currency_worldchrman_slot)):
+                        # in_hub alone also reads True at the main menu (see the
+                        # unlock_all_bosses_in_game block above) - is_save_loaded() rules that out,
+                        # so Murk/Sigils are only ever granted into a loaded save.
+                        for currency in HUB_CURRENCIES:
+                            if currency in self.currency_items:
+                                await self._deliver_pending_currency(currency)
 
                 if in_hub:
                     # Back in the hub (or a fresh/unreadable tick before the first Expedition
@@ -1017,7 +1179,7 @@ class NightreignContext(CommonContext):
                             self._last_strong_reward_raw = strong_raw
 
                 if (
-                    (self.randomize_weapons or self.randomize_talismans)
+                    self._receives_in_run_items()
                     and in_hub is False
                     and self._hub_exit_time is not None
                     and time.monotonic() - self._hub_exit_time >= EXPEDITION_ENTRY_SETTLE_SECONDS
@@ -1034,10 +1196,14 @@ class NightreignContext(CommonContext):
                         if not self._locked_run_drop_withheld_warned:
                             self._locked_run_drop_withheld_warned = True
                             logger.info(
-                                "Withholding weapon/talisman drops this run - the current boss "
-                                "and/or character isn't unlocked for this slot yet."
+                                "Withholding weapon/talisman/rune deliveries this run - the "
+                                "current boss and/or character isn't unlocked for this slot yet."
                             )
                     else:
+                        # Runes are a counter increment, not a ground drop - no grounded/flight
+                        # requirement beyond the settle window above.
+                        if "Runes" in self.currency_items:
+                            await self._deliver_pending_currency("Runes")
                         # Level-triggered every tick, not edge-triggered on hub-exit: a pending drop
                         # needs both "in an Expedition" and "not mid-flight" (live-tested, see
                         # game_data.py) to land. Safe to retry: _delivered_weapon_keys/

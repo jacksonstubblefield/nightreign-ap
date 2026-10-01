@@ -172,6 +172,40 @@ class ReceiveTalismans(Toggle):
     default = 1
 
 
+class ReceiveMurk(Toggle):
+    """If enabled, receive Murk.
+    """
+
+    display_name = "Receive Murk"
+    default = 1
+
+
+class StartingMurk(Range):
+    """Default is 12,000 Murk, or 20 relic rolls. To start your new save file off with a few relics.
+    """
+
+    display_name = "Starting Murk"
+    range_start = 0
+    range_end = 60000
+    default = 12000
+
+
+class ReceiveRunes(Toggle):
+    """If enabled, receive runes on runs.
+    """
+
+    display_name = "Receive Runes"
+    default = 1
+
+
+class ReceiveSovereignSigils(Toggle):
+    """If enabled, receive Sovereign Sigils on runs.
+    """
+
+    display_name = "Receive Sovereign Sigils"
+    default = 1
+
+
 class WinCountChecks(Toggle):
     """If enabled, adds extra checks for winning a cumulative number of Expeditions this seed,
     regardless of which boss or character was defeated - at 1, 2, 3, 5, 7, and 10 total wins, then
@@ -282,6 +316,10 @@ option_groups = [
     OptionGroup("Items", [
         ReceiveWeapons,
         ReceiveTalismans,
+        ReceiveMurk,
+        StartingMurk,
+        ReceiveRunes,
+        ReceiveSovereignSigils,
     ]),
     OptionGroup("Extra Checks", [
         WinCountChecks,
@@ -304,6 +342,10 @@ class NightreignOptions(PerGameCommonOptions):
     gate_character_access: GateCharacterAccess
     receive_weapons: ReceiveWeapons
     receive_talismans: ReceiveTalismans
+    receive_murk: ReceiveMurk
+    starting_murk: StartingMurk
+    receive_runes: ReceiveRunes
+    receive_sovereign_sigils: ReceiveSovereignSigils
     win_count_checks: WinCountChecks
     win_count_up_to: WinCountUpTo
     # weak_reward_checks: WeakRewardChecks

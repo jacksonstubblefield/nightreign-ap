@@ -272,6 +272,28 @@ ABOBA_FUNC_OFFSET = -0x7A
 # function - see memory_writer.py's module docstring for why this is needed at all.
 TLS_FAKE_CONTEXT_RVA = 0x3C1F918
 
+# --- Currency grant write path (Murk/Runes/Sovereign Sigil filler) ---
+# Ported from the CT table's "Give Murk"/"Give Runes [Expedition]"/"Give Sovereign Sigil" scripts
+# (contributor Volkov_ilya37) - each is a plain `executeCodeEx(fn, [GameDataMan]+8, amount)`, i.e.
+# fn(PlayerGameData*, amount), the same 2-argument shape memory_writer.py's EventFlag trampoline
+# already handles. Every AOB lands directly on the function entry (no offset). Resolved lazily and
+# independently of each other, not in connect() - see memory_reader.py's resolve_currency_target().
+# NOT yet live-tested from Python, only via the source CT scripts.
+MURK_GRANT_AOB = "44 8B 81 D0 00 00 00 4C 8B D1 B9 FF C9 9A 3B 41 8D 04 10 3B C1 0F 4F C1"
+SOVEREIGN_SIGIL_GRANT_AOB = "44 8B 41 5C 4C 8B D1 B9 FF C9 9A 3B 41 8D 04 10 3B C1 0F 4F C1"
+RUNES_GRANT_AOB = "48 89 5C 24 08 57 48 83 EC 20 8B 79 6C 48 8B D9"
+
+# PlayerGameData-relative (i.e. [GameDataMan+0x8]+offset) counters each grant function above reads
+# as its first instruction - read back before/after a grant for logging only, never as a
+# success/retry signal (see client.py's _deliver_pending_currency for why).
+MURK_COUNTER_OFFSET = 0xD0
+SOVEREIGN_SIGIL_COUNTER_OFFSET = 0x5C
+RUNES_COUNTER_OFFSET = 0x6C
+
+# Both grant functions clamp the running total at 999,999,999 themselves (the `B9 FF C9 9A 3B`
+# in their AOBs) - this just keeps one batched request inside a signed 32-bit int.
+CURRENCY_GRANT_MAX = 999_999_999
+
 # --- Current Animation read path (flight gating for the item-drop write path) ---
 # WorldChrMan pointer-slot AOB, same shape as GAMEMAN_AOB/GAMEDATAMAN_AOB. Unlike those, its live
 # object address changes across scenes, so callers must re-walk the chain on every read.
@@ -293,3 +315,47 @@ def is_flying_animation(current_animation: int) -> bool:
     """True if `current_animation` (see WORLDCHRMAN_ANIM_OFFSETS above) falls in the live-tested
     flying band - used to gate the randomized item-drop write path on the player being grounded."""
     return current_animation in FLYING_ANIMATION_RANGE
+
+
+# Each grantable currency's counter offset, keyed by currency name - the same keys
+# memory_reader.py's resolve_currency_target() uses to pick each currency's grant AOB.
+CURRENCY_COUNTER_OFFSETS = {
+    "Murk": MURK_COUNTER_OFFSET,
+    "Runes": RUNES_COUNTER_OFFSET,
+    "Sovereign Sigil": SOVEREIGN_SIGIL_COUNTER_OFFSET,
+}
+
+# Currency filler items, keyed by item name (see Items.py): (currency, amount granted, weight).
+# Weight is relative within the same currency only - once __init__.py's get_filler_item_name()
+# picks a currency, it picks which bundle by these weights, so a currency with several bundles
+# isn't any more common overall than one with a single item.
+# Runes: 5,000 is about one early level (level 2 costs 3,698); a Heroic Rune Bundle takes a fresh
+# character to roughly level 7 (89,633 total, level 8 is 121,770). Murk weights are placeholders
+# pending real play-calibration; Sovereign Sigils are a single fixed bundle of 6.
+CURRENCY_BUNDLES = {
+    "Rune Bundle": ("Runes", 5000, 95),
+    "Heroic Rune Bundle": ("Runes", 100000, 5),
+    "Murk Bundle": ("Murk", 500, 60),
+    "Large Murk Bundle": ("Murk", 1000, 30),
+    "Titanic Murk Bundle": ("Murk", 5000, 10),
+    "Sovereign Sigil Bundle": ("Sovereign Sigil", 6, 1),
+}
+
+
+def currency_bundle_names(currency: str) -> list:
+    """Every CURRENCY_BUNDLES item name that grants `currency`, in table order."""
+    return [name for name, (bundle_currency, _amount, _weight) in CURRENCY_BUNDLES.items()
+            if bundle_currency == currency]
+
+
+def bundles_for_amount(currency: str, amount: int) -> list:
+    """Fewest bundle items of `currency` adding up to `amount`, largest first - e.g. Murk 12,000 ->
+    2 Titanic + 2 Large. Any remainder smaller than the smallest bundle is dropped, so the result
+    can total slightly less than `amount` (Murk always comes out exact for multiples of 500)."""
+    bundles = sorted(currency_bundle_names(currency), key=lambda name: -CURRENCY_BUNDLES[name][1])
+    result = []
+    for name in bundles:
+        size = CURRENCY_BUNDLES[name][1]
+        count, amount = divmod(amount, size)
+        result += [name] * count
+    return result

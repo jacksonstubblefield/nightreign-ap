@@ -3,8 +3,10 @@ from Options import OptionError
 from worlds.AutoWorld import World, WebWorld
 from worlds.LauncherComponents import Component, Type, components, icon_paths, launch_subprocess
 
-from .game_data import (ACCESS_CHARACTERS, ACCESS_NIGHTLORDS, CHARACTERS, EVERDARK_NIGHTLORDS,
-                        NIGHTLORD_BONUS_INDICES, NIGHTLORDS, starting_free_characters,
+from .game_data import (ACCESS_CHARACTERS, ACCESS_NIGHTLORDS, CHARACTERS, CURRENCY_BUNDLES,
+                        CURRENCY_COUNTER_OFFSETS, EVERDARK_NIGHTLORDS, NIGHTLORD_BONUS_INDICES,
+                        NIGHTLORDS, bundles_for_amount, currency_bundle_names,
+                        starting_free_characters,
                         starting_free_everdark_nightlords, starting_free_nightlords,
                         win_count_threshold_list)
 from .Items import FILLER_ITEM_NAMES, NightreignItem, item_name_to_id, item_table
@@ -116,13 +118,13 @@ class NightreignWorld(World):
         # (see client.py's _maybe_declare_goal). Set explicitly, per docs/adding games.md.
         self.multiworld.completion_condition[self.player] = lambda state: True
 
-        if not self.options.receive_weapons and not self.options.receive_talismans:
-            # There is no other flavorful filler item left (Trophy items were removed once
-            # Randomized Weapon/Talisman gave real in-game drops) - with both options off,
-            # get_filler_item_name() would have an empty pool to choose from.
+        if not self._enabled_filler_names():
+            # No item is unconditionally filler (see Items.py's FILLER_ITEM_NAMES) - with every
+            # receive_* option off, get_filler_item_name() would have an empty pool to choose from.
             raise OptionError(
-                f"{self.player_name}: at least one of receive_weapons/receive_talismans must be "
-                "enabled, since filler items are drawn from those two pools."
+                f"{self.player_name}: at least one of receive_weapons/receive_talismans/"
+                "receive_murk/receive_runes/receive_sovereign_sigils must be enabled, since filler "
+                "items are drawn from those pools."
             )
 
         # A starting_boss value >= len(NIGHTLORDS) is one of the everdark_* choices, positionally
@@ -491,17 +493,41 @@ class NightreignWorld(World):
         filler_count = len(self.active_locations) - total_progression
         self.multiworld.itempool += [self.create_filler() for _ in range(filler_count)]
 
+        # starting_murk: precollected (start inventory), not pool items, so they take up no
+        # location and don't displace any filler. The server sends start inventory to the client
+        # as ordinary received items, so client.py's normal Murk delivery grants it in the
+        # Roundtable Hold - see fill_slot_data()'s "starting_murk" for how the client knows to
+        # enable that delivery even with receive_murk off.
+        for name in bundles_for_amount("Murk", self.options.starting_murk.value):
+            self.multiworld.push_precollected(self.create_item(name))
+
     def create_item(self, name: str) -> NightreignItem:
         data = item_table[name]
         return NightreignItem(name, data.classification, data.code, self.player)
 
-    def get_filler_item_name(self) -> str:
-        names = FILLER_ITEM_NAMES
+    def _enabled_filler_names(self) -> list[str]:
+        names = list(FILLER_ITEM_NAMES)
         if self.options.receive_weapons:
-            names = names + ["Randomized Weapon"]
+            names.append("Randomized Weapon")
         if self.options.receive_talismans:
-            names = names + ["Randomized Talisman"]
-        return self.random.choice(names)
+            names.append("Randomized Talisman")
+        # Currency entries are the currency name, not an item name - get_filler_item_name() then
+        # picks one of that currency's bundles by weight.
+        if self.options.receive_murk:
+            names.append("Murk")
+        if self.options.receive_runes:
+            names.append("Runes")
+        if self.options.receive_sovereign_sigils:
+            names.append("Sovereign Sigil")
+        return names
+
+    def get_filler_item_name(self) -> str:
+        name = self.random.choice(self._enabled_filler_names())
+        if name not in CURRENCY_COUNTER_OFFSETS:
+            return name
+        bundles = currency_bundle_names(name)
+        weights = [CURRENCY_BUNDLES[bundle][2] for bundle in bundles]
+        return self.random.choices(bundles, weights=weights)[0]
 
     def fill_slot_data(self) -> dict:
         return {
@@ -510,6 +536,10 @@ class NightreignWorld(World):
             "unlock_all_bosses_in_game": bool(self.options.unlock_all_bosses_in_game),
             "receive_weapons": bool(self.options.receive_weapons),
             "receive_talismans": bool(self.options.receive_talismans),
+            "receive_murk": bool(self.options.receive_murk),
+            "receive_runes": bool(self.options.receive_runes),
+            "receive_sovereign_sigils": bool(self.options.receive_sovereign_sigils),
+            "starting_murk": self.options.starting_murk.value,
             "win_count_checks": bool(self.options.win_count_checks),
             "win_count_thresholds": self.win_count_thresholds,
             # weak_reward_checks/strong_reward_checks: hardcoded False - the options are commented

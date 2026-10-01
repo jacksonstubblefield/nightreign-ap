@@ -11,9 +11,12 @@ per starting_boss option exercises every "freed Nightlord" case since that's wha
 branches on.
 """
 
+import unittest
+
 from Options import OptionError
 from test.bases import WorldTestBase
-from worlds.nightreign.game_data import (ALL_NIGHTLORD_ENTRIES, CHARACTERS, EVERDARK_NIGHTLORDS,
+from worlds.nightreign.game_data import (ALL_NIGHTLORD_ENTRIES, CHARACTERS, CURRENCY_BUNDLES,
+                                          EVERDARK_NIGHTLORDS,
                                           NIGHTLORD_BONUS_INDICES, NIGHTLORDS,
                                           REWARD_CHECK_THRESHOLDS)
 from worlds.nightreign.Locations import (location_name, location_name_boss_only,
@@ -306,14 +309,52 @@ class NightreignEverdarkAccessIsSeparateTest(WorldTestBase):
 class NightreignNoFillerSourceTest(WorldTestBase):
     game = "Elden Ring Nightreign"
     auto_construct = False
-    options = {"receive_weapons": False, "receive_talismans": False}
+    options = {
+        "receive_weapons": False, "receive_talismans": False, "receive_murk": False,
+        "receive_runes": False, "receive_sovereign_sigils": False,
+    }
 
-    def test_disabling_both_weapons_and_talismans_raises(self) -> None:
+    def test_disabling_every_filler_source_raises(self) -> None:
         # Trophy items (the old always-available flavor filler) were removed once Randomized
-        # Weapon/Talisman gave real in-game drops, so with both of those off there is no filler
-        # item left for get_filler_item_name() to choose from.
+        # Weapon/Talisman gave real in-game drops, so with every receive_* option off there is no
+        # filler item left for get_filler_item_name() to choose from.
         with self.assertRaises(OptionError):
             self.world_setup()
+
+
+FILLER_NAMES = ("Randomized Weapon", "Randomized Talisman", *CURRENCY_BUNDLES)
+
+
+class NightreignCurrencyOnlyFillerTest(WorldTestBase):
+    game = "Elden Ring Nightreign"
+    options = {"receive_weapons": False, "receive_talismans": False}
+
+    def test_filler_drawn_only_from_currencies(self) -> None:
+        filler = [item.name for item in self.multiworld.itempool
+                  if item.player == self.player and item.name in FILLER_NAMES]
+        self.assertTrue(filler)
+        self.assertTrue(set(filler) <= set(CURRENCY_BUNDLES))
+
+    def test_slot_data_carries_currency_toggles(self) -> None:
+        slot_data = self.world.fill_slot_data()
+        self.assertTrue(slot_data["receive_murk"])
+        self.assertTrue(slot_data["receive_runes"])
+        self.assertTrue(slot_data["receive_sovereign_sigils"])
+
+
+class NightreignSingleCurrencyFillerTest(WorldTestBase):
+    game = "Elden Ring Nightreign"
+    options = {
+        "receive_weapons": False, "receive_talismans": False, "receive_murk": False,
+        "receive_runes": True, "receive_sovereign_sigils": False,
+    }
+
+    def test_only_enabled_currency_in_pool(self) -> None:
+        filler = {item.name for item in self.multiworld.itempool
+                  if item.player == self.player and item.name in FILLER_NAMES}
+        self.assertTrue(filler)
+        self.assertTrue(filler <= {"Rune Bundle", "Heroic Rune Bundle"})
+        self.assertFalse(self.world.fill_slot_data()["receive_murk"])
 
 
 # --- `goal` option coverage ---
@@ -734,3 +775,74 @@ class NightreignAllExtraCheckFamiliesTogetherTest(WorldTestBase):
         }
         self.assertTrue(extra_ids)
         self.assertTrue(extra_ids.isdisjoint(all_goal_ids))
+
+
+class NightreignCurrencyBundleTableTest(unittest.TestCase):
+    def test_every_bundle_names_a_grantable_currency(self) -> None:
+        from worlds.nightreign.game_data import CURRENCY_COUNTER_OFFSETS
+        for name, (currency, amount, weight) in CURRENCY_BUNDLES.items():
+            self.assertIn(currency, CURRENCY_COUNTER_OFFSETS, name)
+            self.assertGreater(amount, 0, name)
+            self.assertGreater(weight, 0, name)
+
+    def test_bundle_names_are_items(self) -> None:
+        from worlds.nightreign.Items import item_table
+        for name in CURRENCY_BUNDLES:
+            self.assertIn(name, item_table)
+
+
+class NightreignCurrencyBundleWeightingTest(WorldTestBase):
+    game = "Elden Ring Nightreign"
+    options = {"receive_weapons": False, "receive_talismans": False}
+
+    def test_bundle_weights_steer_generation(self) -> None:
+        # Draw many filler names straight from the world - the common Rune Bundle (weight 95)
+        # must far outnumber the Heroic one (weight 5), and each currency's share must stay
+        # roughly even regardless of how many bundle sizes it has.
+        counts = {}
+        for _ in range(6000):
+            name = self.world.get_filler_item_name()
+            counts[name] = counts.get(name, 0) + 1
+        self.assertGreater(counts["Rune Bundle"], 5 * counts.get("Heroic Rune Bundle", 0))
+        self.assertGreater(counts.get("Heroic Rune Bundle", 0), 0)
+        murk = sum(counts.get(n, 0) for n in
+                   ("Murk Bundle", "Large Murk Bundle", "Titanic Murk Bundle"))
+        runes = counts["Rune Bundle"] + counts.get("Heroic Rune Bundle", 0)
+        self.assertLess(abs(murk - runes), 600)
+
+
+class NightreignStartingMurkTest(WorldTestBase):
+    game = "Elden Ring Nightreign"
+    options = {"starting_murk": 12000, "receive_murk": False}
+
+    def test_starting_murk_is_precollected_bundles(self) -> None:
+        start = [item.name for item in self.multiworld.precollected_items[self.player]]
+        self.assertEqual(sorted(start), sorted(["Titanic Murk Bundle"] * 2 + ["Large Murk Bundle"] * 2))
+        self.assertEqual(sum(CURRENCY_BUNDLES[name][1] for name in start), 12000)
+
+    def test_starting_murk_takes_no_locations(self) -> None:
+        # Pool size still equals location count - the start bundles live outside the pool.
+        own_pool = [item for item in self.multiworld.itempool if item.player == self.player]
+        own_locations = self.multiworld.get_locations(self.player)
+        self.assertEqual(len(own_pool), len(list(own_locations)))
+        self.assertFalse(any("Murk" in item.name for item in own_pool))
+
+    def test_slot_data_lets_client_deliver_murk(self) -> None:
+        self.assertEqual(self.world.fill_slot_data()["starting_murk"], 12000)
+
+
+class NightreignStartingMurkOffTest(WorldTestBase):
+    game = "Elden Ring Nightreign"
+    options = {"starting_murk": 0}
+
+    def test_no_start_inventory(self) -> None:
+        self.assertEqual(self.multiworld.precollected_items[self.player], [])
+
+
+class NightreignBundlesForAmountTest(unittest.TestCase):
+    def test_greedy_largest_first_and_rounds_down(self) -> None:
+        from worlds.nightreign.game_data import bundles_for_amount
+        self.assertEqual(bundles_for_amount("Murk", 6500),
+                         ["Titanic Murk Bundle", "Large Murk Bundle", "Murk Bundle"])
+        self.assertEqual(bundles_for_amount("Murk", 499), [])
+        self.assertEqual(bundles_for_amount("Murk", 0), [])

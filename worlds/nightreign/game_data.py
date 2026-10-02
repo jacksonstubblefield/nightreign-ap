@@ -33,6 +33,8 @@ KNOWN_BOSS_IDS = {
     61: "Fissure in the Fog",
     73: "Night Aspect",
     1080: "Balancers",
+    # User-reported 2026-10-02 (Wylder, non-Everdark) - one past 1080's drift window
+    1084: "Balancers",
     1090: "Dreglord",
 }
 # Checks Nightlord ID +/- 3 given variance seen in testing

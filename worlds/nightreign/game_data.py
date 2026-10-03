@@ -22,28 +22,27 @@ CHARACTERS = list(CHARACTER_CLASS_NAMES.values())
 # in: Balancers=1080, Dreglord=1090. Unlike the base 8, no working EventFlag-based unlock was found
 # for either despite testing several candidates (117, 6950-6952, and 110+117 together) - see
 # ACCESS_ITEM_EVENT_FLAGS below for how that gap is handled.
+#
+# Keys are bases on multiples of 10; each boss matches its base +/- DRIFT_TOLERANCE, so the
+# 9-wide windows never overlap. Comments list the raw ids actually sighted for each.
 KNOWN_BOSS_IDS = {
-    2: "Tricephalos",
-    12: "Gaping Jaw",
-    22: "Sentient Pest",
-    23: "Sentient Pest",
-    32: "Augur",
-    43: "Equilibrious Beast",
-    53: "Darkdrift Night",
-    61: "Fissure in the Fog",
-    73: "Night Aspect",
-    # User-reported 2026-10-02 - Night Aspect on a DLC map reads base id + 1001
-    1074: "Night Aspect",
-    1080: "Balancers",
-    # User-reported 2026-10-02 (Wylder, non-Everdark) - one past 1080's drift window
-    1084: "Balancers",
-    1090: "Dreglord",
+    0: "Tricephalos",            # seen: 2
+    10: "Gaping Jaw",            # seen: 12
+    20: "Sentient Pest",         # seen: 22, 23
+    30: "Augur",                 # seen: 32
+    40: "Equilibrious Beast",    # seen: 43
+    50: "Darkdrift Night",       # seen: 53
+    60: "Fissure in the Fog",    # seen: 61
+    70: "Night Aspect",          # seen: 73
+    1070: "Night Aspect",        # seen: 1074 (user-reported 2026-10-02, DLC map)
+    1080: "Balancers",           # seen: 1080, 1084 (user-reported 2026-10-02, Wylder)
+    1090: "Dreglord",            # seen: 1090
 }
-# Checks Nightlord ID +/- 4 given variance seen in testing
+# Each base covers base-4..base+4, leaving x5 as a gap between neighbours
 DRIFT_TOLERANCE = 4
 
 # +0xB50 reads this sentinel when no boss is selected (hub/menu). With DRIFT_TOLERANCE=4 this
-# sits right inside Tricephalos's (id=2) match window, so it must be checked before
+# sits right inside Tricephalos's (base 0) match window, so it must be checked before
 # tolerance-matching rather than left to fall through - see memory_reader.py.
 UNSET_SENTINEL = -1
 

@@ -32,6 +32,8 @@ KNOWN_BOSS_IDS = {
     53: "Darkdrift Night",
     61: "Fissure in the Fog",
     73: "Night Aspect",
+    # User-reported 2026-10-02 - Night Aspect on a DLC map reads base id + 1001
+    1074: "Night Aspect",
     1080: "Balancers",
     # User-reported 2026-10-02 (Wylder, non-Everdark) - one past 1080's drift window
     1084: "Balancers",

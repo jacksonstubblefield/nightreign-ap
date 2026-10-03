@@ -125,7 +125,7 @@ ACCESS_ALL_BOSSES_JZ_OFFSET = 9  # match_addr + this = the `74 07` (jz +7) bytes
 
 # GameMan-relative offsets.
 HUB_FLAG_OFFSET = 0xB40          # bit 0x10000 set => not in an active run
-BOSS_ID_OFFSET = 0xB50           # small clean int, +~10 per boss, drifts +/-3 - identifies
+BOSS_ID_OFFSET = 0xB50           # small clean int, +~10 per boss, drifts +/-4 - identifies
                                   # *which* boss, NOT normal-vs-Everdark (see EVERDARK_FLAG_OFFSET
                                   # below: a same-boss +1 delta was directly disproven live - a
                                   # confirmed normal Tricephalos run also read the value previously

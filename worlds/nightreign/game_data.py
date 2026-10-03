@@ -39,10 +39,10 @@ KNOWN_BOSS_IDS = {
     1084: "Balancers",
     1090: "Dreglord",
 }
-# Checks Nightlord ID +/- 3 given variance seen in testing
-DRIFT_TOLERANCE = 3
+# Checks Nightlord ID +/- 4 given variance seen in testing
+DRIFT_TOLERANCE = 4
 
-# +0xB50 reads this sentinel when no boss is selected (hub/menu). With DRIFT_TOLERANCE=3 this
+# +0xB50 reads this sentinel when no boss is selected (hub/menu). With DRIFT_TOLERANCE=4 this
 # sits right inside Tricephalos's (id=2) match window, so it must be checked before
 # tolerance-matching rather than left to fall through - see memory_reader.py.
 UNSET_SENTINEL = -1

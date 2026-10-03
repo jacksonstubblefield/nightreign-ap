@@ -24,19 +24,36 @@ CHARACTERS = list(CHARACTER_CLASS_NAMES.values())
 # ACCESS_ITEM_EVENT_FLAGS below for how that gap is handled.
 #
 # Keys are bases on multiples of 10; each boss matches its base +/- DRIFT_TOLERANCE, so the
-# 9-wide windows never overlap. Comments list the raw ids actually sighted for each.
+# 9-wide windows never overlap. Raw ids actually sighted live in OBSERVED_BOSS_IDS below.
 KNOWN_BOSS_IDS = {
-    0: "Tricephalos",            # seen: 2
-    10: "Gaping Jaw",            # seen: 12
-    20: "Sentient Pest",         # seen: 22, 23
-    30: "Augur",                 # seen: 32
-    40: "Equilibrious Beast",    # seen: 43
-    50: "Darkdrift Night",       # seen: 53
-    60: "Fissure in the Fog",    # seen: 61
-    70: "Night Aspect",          # seen: 73
-    1070: "Night Aspect",        # seen: 1074 (user-reported 2026-10-02, DLC map)
-    1080: "Balancers",           # seen: 1080, 1084 (user-reported 2026-10-02, Wylder)
-    1090: "Dreglord",            # seen: 1090
+    0: "Tricephalos",
+    10: "Gaping Jaw",
+    20: "Sentient Pest",
+    30: "Augur",
+    40: "Equilibrious Beast",
+    50: "Darkdrift Night",
+    60: "Fissure in the Fog",
+    70: "Night Aspect",
+    1070: "Night Aspect",        # DLC map variant
+    1080: "Balancers",
+    1090: "Dreglord",
+}
+# Every raw boss_id actually read in a live run, kept even when it already falls inside a
+# window - test_boss_ids.py checks each still resolves to the right boss.
+OBSERVED_BOSS_IDS = {
+    2: "Tricephalos",
+    12: "Gaping Jaw",
+    22: "Sentient Pest",
+    23: "Sentient Pest",
+    32: "Augur",
+    43: "Equilibrious Beast",
+    53: "Darkdrift Night",
+    61: "Fissure in the Fog",
+    73: "Night Aspect",
+    1074: "Night Aspect",        # user-reported 2026-10-02, DLC map
+    1080: "Balancers",
+    1084: "Balancers",           # user-reported 2026-10-02, Wylder, non-Everdark
+    1090: "Dreglord",
 }
 # Each base covers base-4..base+4, leaving x5 as a gap between neighbours
 DRIFT_TOLERANCE = 4

@@ -31,7 +31,7 @@ KNOWN_BOSS_IDS = {
     20: "Sentient Pest",
     30: "Augur",
     40: "Equilibrious Beast",
-    50: "Darkdrift Night",
+    50: "Darkdrift Knight",
     60: "Fissure in the Fog",
     70: "Night Aspect",
     1070: "Night Aspect",        # DLC map variant
@@ -47,7 +47,7 @@ OBSERVED_BOSS_IDS = {
     23: "Sentient Pest",
     32: "Augur",
     43: "Equilibrious Beast",
-    53: "Darkdrift Night",
+    53: "Darkdrift Knight",
     61: "Fissure in the Fog",
     73: "Night Aspect",
     1074: "Night Aspect",        # user-reported 2026-10-02, DLC map

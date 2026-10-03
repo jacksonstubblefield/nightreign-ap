@@ -58,7 +58,7 @@ class StartingBoss(Choice):
     option_sentient_pest = 2
     option_augur = 3
     option_equilibrious_beast = 4
-    option_darkdrift_night = 5
+    option_darkdrift_knight = 5
     option_fissure_in_the_fog = 6
     option_night_aspect = 7
     option_balancers = 8
@@ -68,7 +68,7 @@ class StartingBoss(Choice):
     option_everdark_sentient_pest = 12
     option_everdark_augur = 13
     option_everdark_equilibrious_beast = 14
-    option_everdark_darkdrift_night = 15
+    option_everdark_darkdrift_knight = 15
     option_everdark_fissure_in_the_fog = 16
     option_everdark_balancers = 17
     default = 0

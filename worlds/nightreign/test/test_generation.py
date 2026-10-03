@@ -3,7 +3,7 @@ access_rule to any location, so the fill algorithm had no idea "Defeat X" requir
 Access item first. That let it place the only route to a Nightlord behind an unreachable
 location (see a real seed's spoiler log: starting_boss Fissure in the Fog -> Night Aspect Access
 -> a filler Trophy, a dead end, while Tricephalos/Gaping Jaw/Augur/Sentient Pest/Equilibrious
-Beast/Darkdrift Night sat in disconnected cycles never reachable from the start).
+Beast/Darkdrift Knight sat in disconnected cycles never reachable from the start).
 
 WorldTestBase.test_fill (test/bases.py) reruns the real distribute_items_restrictive fill and
 asserts every location is reachable in some sphere - exactly the invariant that broke. One class
@@ -60,9 +60,9 @@ class NightreignGateEquilibriousBeastTest(WorldTestBase):
     options = {"gate_boss_access": True, "starting_boss": "equilibrious_beast"}
 
 
-class NightreignGateDarkdriftNightTest(WorldTestBase):
+class NightreignGateDarkdriftKnightTest(WorldTestBase):
     game = "Elden Ring Nightreign"
-    options = {"gate_boss_access": True, "starting_boss": "darkdrift_night"}
+    options = {"gate_boss_access": True, "starting_boss": "darkdrift_knight"}
 
 
 class NightreignGateFissureInTheFogTest(WorldTestBase):

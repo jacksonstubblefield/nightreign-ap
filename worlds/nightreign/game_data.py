@@ -1,6 +1,8 @@
 """Static game data for Nightreign
 """
 
+from typing import Optional
+
 # Character class ID
 CHARACTER_CLASS_NAMES = {
     50000: "Wylder",
@@ -223,13 +225,12 @@ NIGHTLORD_BONUS_INDICES = (2, 3, 4, 5)
 
 # --- Day/night phase tracking (Night 1 / Night 2 clear checks) ---
 # GameDataMan+0x00de (see memory_reader.py's DAY_NIGHT_PHASE_OFFSET) cycles through an expedition:
-# Day 1 -> Night 1 (mid-run boss) -> Day 2 -> Night 2 (the Nightlord itself), resetting to Day 1
-# at the start of each new expedition. Night 1 Clear fires on the DAY_1->DAY_2-via-NIGHT_1 boss
-# kill (the 1->2 transition); Night 2 Clear fires on a successful transition into what would be
-# "Day 3" (the 3->4 transition) - NOT on merely reaching the Night 2 arena (2->3), which only means
-# the fight started, not that it was won. DAY_PHASE_DAY_3 is a hypothesis, not yet live-confirmed -
-# the RE session that found offsets 0-3 never specifically captured the instant right after a
-# Night 2 win (see nightreign-roadmap memory) - verify live before trusting this edge in play.
+# Day 1 -> Night 1 (mid-run boss) -> Day 2 -> Night 2 (second night boss) -> Day 3 (the Nightlord
+# arena), then 5 back in the lobby; resets to Day 1 at the start of each new expedition. Night 1
+# Clear fires on the Night 1 boss kill (the 1->2 transition); Night 2 Clear fires on the Night 2
+# boss kill (the 3->4 transition, ~20-60s after the kill) - NOT on merely reaching the Night 2
+# arena (2->3). DAY_PHASE_DAY_3 live-confirmed 2026-10-04 across a Night Aspect and an Augur run:
+# 3->4 right after the Night 2 boss died, held at 4 through the whole Nightlord fight.
 # Each Nightlord (or Nightlord x character, mirroring bosses_with_characters) gets exactly ONE
 # Night 1 Clear location and ONE Night 2 Clear location - not a cumulative counter, and not
 # optional, same "universal baseline" posture as the bonus checks above.
@@ -237,26 +238,43 @@ DAY_PHASE_DAY_1 = 0
 DAY_PHASE_NIGHT_1 = 1
 DAY_PHASE_DAY_2 = 2
 DAY_PHASE_NIGHT_2 = 3
-DAY_PHASE_DAY_3 = 4  # unconfirmed - see comment above
+DAY_PHASE_DAY_3 = 4
+
+
+def is_nightlord_kill_tick(
+    last_buff_picks: Optional[int], buff_picks: Optional[int], day_phase: Optional[int]
+) -> bool:
+    """True when memory_reader's buff-pick counter (BUFF_PICK_COUNTER_OFFSET) just rose while in the
+    Day 3 Nightlord arena - the game ticks that counter once on the Nightlord kill itself.
+
+    This is the primary win signal, with the outcome pulse (OUTCOME_PULSE_OFFSET) as a fallback,
+    because the pulse never fires for Night Aspect: its ending/credits path skips the normal result
+    flow. Live-confirmed 2026-10-04: Augur's kill ticked this ~7s before the pulse; Night Aspect's
+    kill ticked it with no pulse at all, and its phase-1 end did not tick it. The Day 3 arena holds
+    only the Nightlord, so no other buff pick should land in this phase. last_buff_picks is None
+    on the first in-run read (a baseline, never an edge), so connecting mid-fight can't misfire."""
+    return (
+        day_phase == DAY_PHASE_DAY_3
+        and last_buff_picks is not None
+        and buff_picks is not None
+        and buff_picks > last_buff_picks
+    )
 
 
 # --- Reward-tier checks (weak/strong) ---
 # Fixed 1-5 cumulative counter per Nightlord (or per Nightlord x character, mirroring
 # bosses_with_characters) for the game's own "Weak"/"Strong" reward-tier POI pickups (see
-# memory_reader.py's WEAK_REWARD_COUNTER_OFFSET/STRONG_REWARD_COUNTER_OFFSET) collected during an
+# memory_reader.py's WEAPON_PICKUP_COUNTER_OFFSET/BUFF_PICK_COUNTER_OFFSET) collected during an
 # Expedition against that Nightlord. Unlike the two families above, these stay opt-in
 # (Options.py's WeakRewardChecks/StrongRewardChecks) since several can be earned in a single
 # Expedition and not everyone wants that much added density. Fixed at 5, not configurable.
 #
-# KNOWN ISSUE, live-confirmed (see Options.py's WeakRewardChecks/StrongRewardChecks docstrings for
-# the player-facing version): these two offsets fire on ANY weapon pickup, not just genuine
-# reward-tier POI clears - including this world's own randomized weapon drops. The original RE
-# session that found these offsets (see nightreign-roadmap memory, 2026-08-30) only corroborated
-# them against real POI clears and never tested the negative control of "pick up a plain field
-# weapon with no POI involved" - so the false-positive went unnoticed until live multiplayer
-# testing. Both options default to off until a real discriminator is found (if one exists at all -
-# it's possible this counter simply IS a general weapon-pickup counter and the POI-clear
-# correlation was coincidental, since POI clears often drop a weapon as their reward).
+# KNOWN ISSUE, live-confirmed: neither counter is a POI-tier signal. A narrated live run
+# (2026-10-04) showed "weak" counts every weapon acquired from any source (orb, chest, ground, any
+# rarity) and "strong" counts boss-reward buff picks plus the Nightlord kill - see memory_reader.py's
+# comment on those offsets. The original RE session (nightreign-roadmap memory, 2026-08-30) only
+# corroborated them against real POI clears, which usually drop a weapon or buff as their reward.
+# Both options default to off for that reason.
 REWARD_CHECK_THRESHOLDS = (1, 2, 3, 4, 5)
 
 

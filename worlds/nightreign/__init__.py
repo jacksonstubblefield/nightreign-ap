@@ -550,6 +550,14 @@ class NightreignWorld(World):
             "strong_reward_checks": False,
             "strong_reward_thresholds": self.strong_reward_thresholds,
             "everdark_nightlords": self.everdark_nightlords,
+            # Base Nightlords/characters this slot includes - lets the client's Unlocks tab list
+            # only what's actually in play (Everdark entries go through everdark_nightlords above).
+            "included_nightlords": [
+                nl for nl in ACCESS_NIGHTLORDS if nl in self.options.included_nightlords.value
+            ],
+            "included_characters": [
+                c for c in ACCESS_CHARACTERS if c in self.options.included_characters.value
+            ],
             "starting_boss": self.starting_boss,
             "starting_boss_everdark": self.starting_boss_everdark,
             "starting_character": self.starting_character,

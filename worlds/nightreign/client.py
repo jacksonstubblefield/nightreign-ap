@@ -47,9 +47,11 @@ own Expeditions menu regardless of real in-game unlock progress - purely a menu-
 it never touches AP's own unlock state, so gate_boss_access's Access-item checks above still apply
 exactly as if this were off. With all four options off, received items
 have no in-game effect - the base CommonContext/CLI/GUI machinery just logs
-them, same as before any was added. When win_count_checks is on, every detected win with a
-resolved boss_id (read_outcome_pulse()'s rising edge, same signal _handle_win already acts on)
-increments a per-seed win counter persisted in the run state file (_open_run_state/
+them, same as before any was added. Wins are detected via _trigger_win (at most once per
+Expedition) from two signals: primarily the buff-pick counter ticking in the Day 3 Nightlord arena
+(game_data.is_nightlord_kill_tick - the only signal Night Aspect produces), with
+read_outcome_pulse()'s rising edge as a fallback. When win_count_checks is on, every detected win
+with a resolved boss_id increments a per-seed win counter persisted in the run state file (_open_run_state/
 _write_run_state), and crossing one of this slot's win_count_thresholds (from slot_data - see
 game_data.win_count_threshold_list/__init__.py's generate_early()) sends that "Win N Expeditions"
 location - see _handle_win_count. This track is deliberately ungated: it counts every real win
@@ -65,12 +67,12 @@ further here (self.checked_location_ids already prevents re-sending, the same as
 X" location). Night 1/Night 2 Clear are also universal, but each is a single non-cumulative
 location per boss/character/everdark, sent via _credit_single_check once (never re-sent, same
 dedup): Night 1 fires on the day/night phase's 1->2 transition (the mid-run boss defeated), Night 2
-fires on the 3->4 transition (a successful transition out of the Night 2/final fight - NOT merely
-reaching it, which is the 2->3 transition) - see game_data.py's DAY_PHASE_* constants for why "4" is
-flagged as a live-unconfirmed hypothesis. The third family, weak_reward_checks/strong_reward_checks,
+fires on the 3->4 transition (the Night 2 boss defeated, entering the Day 3 Nightlord arena - NOT
+merely reaching the Night 2 fight, which is the 2->3 transition) - see game_data.py's DAY_PHASE_*
+constants. The third family, weak_reward_checks/strong_reward_checks,
 stays opt-in and IS a genuinely cumulative counter (fixed at 1-5, game_data.REWARD_CHECK_THRESHOLDS)
 sharing _credit_threshold (via _credit_extra_check) with win_count above - driven by
-memory_reader.read_weak_reward_count()/read_strong_reward_count(), monotonic per-Expedition pickup
+memory_reader.read_weapon_pickup_count()/read_buff_pick_count(), monotonic per-Expedition
 counters credited by their delta since the last poll. Night 1/Night 2 Clear and weak/strong reward
 all attribute their event to whichever Nightlord/character/Everdark-ness is currently resolvable
 (see _resolve_win_context), independently of the win-pulse _handle_win itself reacts to, and are
@@ -103,7 +105,8 @@ from .game_data import (ACCESS_CHARACTERS, ACCESS_ITEM_EVENT_FLAGS, ACCESS_NIGHT
                         CHARACTER_ACCESS_EVENT_FLAGS, CURRENCY_BUNDLES,
                         CURRENCY_COUNTER_OFFSETS, CURRENCY_GRANT_MAX,
                         DAY_PHASE_DAY_2, DAY_PHASE_DAY_3, DAY_PHASE_NIGHT_1, DAY_PHASE_NIGHT_2, EVERDARK_NIGHTLORDS,
-                        NIGHTLORD_BONUS_INDICES, currency_bundle_names, is_flying_animation, starting_free_characters,
+                        NIGHTLORD_BONUS_INDICES, currency_bundle_names, is_flying_animation,
+                        is_nightlord_kill_tick, starting_free_characters,
                         starting_free_everdark_nightlords, starting_free_nightlords)
 from .item_data import (EFFECT_CAP_MAP, TALISMAN_TABLE, WEAPON_ART_TABLE, WEAPON_TABLE,
                         natural_weapon_tier, roll_effect_tier, roll_upgrade_tier)
@@ -115,6 +118,7 @@ from .Locations import (location_name, location_name_boss_only, location_name_ev
 from .memory_reader import EACDetectedError, NightreignMemoryReader, PointerNotFoundError
 from .memory_writer import (NightreignCurrencyWriter, NightreignItemDropWriter,
                             NightreignMemoryWriter)
+from . import tracker
 from .overlay import NightreignOverlay
 
 logger = logging.getLogger("NightreignClient")
@@ -126,7 +130,7 @@ RECONNECT_INTERVAL = 2
 BUILD_MISMATCH_BACKOFF = 30
 
 # The fly-in animation
-EXPEDITION_ENTRY_SETTLE_SECONDS = 15
+EXPEDITION_ENTRY_SETTLE_SECONDS = 60
 
 # How long to wait after arriving in the Roundtable Hold before granting Murk/Sovereign Sigils -
 # a margin past the load, same caution as EXPEDITION_ENTRY_SETTLE_SECONDS.
@@ -197,6 +201,8 @@ class NightreignContext(CommonContext):
     randomize_talismans: bool
     currency_items: set
     everdark_nightlords: set
+    included_nightlords: list
+    included_characters: list
     freed_nightlords: set
     freed_everdark_nightlords: set
     freed_characters: set
@@ -212,7 +218,9 @@ class NightreignContext(CommonContext):
     strong_reward_counts: dict
     _last_day_phase: Optional[int]
     _last_weak_reward_raw: Optional[int]
-    _last_strong_reward_raw: Optional[int]
+    _last_buff_pick_raw: Optional[int]
+    _last_in_hub: Optional[bool]
+    _win_handled_this_run: bool
     goal: str
     goal_groups: list
     writer: Optional[NightreignMemoryWriter]
@@ -228,7 +236,6 @@ class NightreignContext(CommonContext):
 
     _last_pulse: Optional[int]
     _synced_flags: set
-    _last_overlay_state: Optional[tuple]
     _delivered_weapon_keys: set
     _delivered_talisman_keys: set
     _delivered_currency_keys: dict
@@ -252,6 +259,8 @@ class NightreignContext(CommonContext):
         self.randomize_talismans = False
         self.currency_items = set()
         self.everdark_nightlords = set()
+        self.included_nightlords = list(ACCESS_NIGHTLORDS)
+        self.included_characters = list(ACCESS_CHARACTERS)
         self.freed_nightlords = set()
         self.freed_everdark_nightlords = set()
         self.freed_characters = set()
@@ -267,7 +276,9 @@ class NightreignContext(CommonContext):
         self.strong_reward_counts = {}
         self._last_day_phase = None
         self._last_weak_reward_raw = None
-        self._last_strong_reward_raw = None
+        self._last_buff_pick_raw = None
+        self._last_in_hub = None
+        self._win_handled_this_run = False
         self.goal = "all_bosses"
         self.goal_groups = []
         self.writer = None
@@ -282,7 +293,6 @@ class NightreignContext(CommonContext):
         self._all_bosses_worldchrman_slot = None
         self._last_pulse = None
         self._synced_flags = set()
-        self._last_overlay_state = None
         self._delivered_weapon_keys = set()
         self._delivered_talisman_keys = set()
         self._delivered_currency_keys = {name: set() for name in CURRENCY_COUNTER_OFFSETS}
@@ -297,9 +307,135 @@ class NightreignContext(CommonContext):
         # Allow deferred import for GUI
         from kvui import GameManager
 
+        from kivy.clock import Clock
+        from kivy.metrics import dp
+        from kivy.uix.behaviors import ButtonBehavior
+        from kivymd.uix.boxlayout import MDBoxLayout
+        from kivymd.uix.label import MDLabel
+        from kivymd.uix.scrollview import MDScrollView
+
+        STATUS_COLORS = {
+            tracker.LOCKED: (0.90, 0.30, 0.30, 1),
+            tracker.AVAILABLE: (0.30, 0.80, 0.35, 1),
+            tracker.DONE: (0.55, 0.55, 0.55, 1),
+        }
+
+        def status_label(text: str, status: str, **kwargs) -> MDLabel:
+            return MDLabel(text=text, adaptive_height=True, theme_text_color="Custom",
+                           text_color=STATUS_COLORS[status], **kwargs)
+
+        class ToggleLabel(ButtonBehavior, MDLabel):
+            pass
+
+        class TrackerSection(MDBoxLayout):
+            """A bold title over a list of colored rows. Rows with children (bosses in
+            boss-with-character mode) render collapsed behind a +/- toggle."""
+
+            def __init__(self, title: str, expanded: set, **kwargs):
+                super().__init__(orientation="vertical", adaptive_height=True, spacing=dp(2),
+                                 padding=(dp(8), dp(8), dp(8), dp(8)), **kwargs)
+                self.expanded = expanded  # shared with the manager so it survives rebuilds
+                self.header = MDLabel(text=title, bold=True, adaptive_height=True)
+                self.add_widget(self.header)
+                self.rows = MDBoxLayout(orientation="vertical", adaptive_height=True, spacing=dp(2))
+                self.add_widget(self.rows)
+
+            def set_rows(self, title: str, rows: list, empty_text: str) -> None:
+                self.header.text = title
+                self.rows.clear_widgets()
+                if not rows:
+                    self.rows.add_widget(MDLabel(text=empty_text, adaptive_height=True))
+                    return
+                for row in rows:
+                    if not row.children:
+                        self.rows.add_widget(status_label(row.name, row.status))
+                        continue
+                    self._add_collapsible(row)
+
+            def _add_collapsible(self, row) -> None:
+                children_box = MDBoxLayout(orientation="vertical", adaptive_height=True,
+                                           padding=(dp(24), 0, 0, 0))
+                for child in row.children:
+                    children_box.add_widget(status_label(child.name, child.status))
+                toggle = ToggleLabel(adaptive_height=True, theme_text_color="Custom",
+                                     text_color=STATUS_COLORS[row.status])
+
+                def render(*_args) -> None:
+                    is_open = row.name in self.expanded
+                    toggle.text = f"{'-' if is_open else '+'} {row.name}"
+                    index = self.rows.children.index(toggle)
+                    if is_open and children_box.parent is None:
+                        # Kivy's add_widget index counts from the end - this lands right below.
+                        self.rows.add_widget(children_box, index=index)
+                    elif not is_open and children_box.parent is not None:
+                        self.rows.remove_widget(children_box)
+
+                def on_release(*_args) -> None:
+                    self.expanded.symmetric_difference_update({row.name})
+                    render()
+
+                toggle.bind(on_release=on_release)
+                self.rows.add_widget(toggle)
+                render()
+
+        def scrolled(*sections) -> MDScrollView:
+            body = MDBoxLayout(orientation="vertical", adaptive_height=True)
+            for section in sections:
+                body.add_widget(section)
+            scroll = MDScrollView()
+            scroll.add_widget(body)
+            return scroll
+
+        def count_done(rows: list) -> int:
+            return sum(1 for r in rows if r.status == tracker.DONE)
+
+        ctx = self
+
         class NightreignManager(GameManager):
             logging_pairs = [("Client", "Archipelago")]
             base_title = "Archipelago Nightreign Client"
+
+            def build(self):
+                container = super().build()
+                self.expanded_bosses = set()  # every boss starts collapsed
+                self.bosses_section = TrackerSection("Bosses", self.expanded_bosses)
+                self.characters_section = TrackerSection("Characters", set())
+                self.wins_section = TrackerSection("Win Count", set())
+                unlocks = MDBoxLayout(orientation="horizontal")
+                unlocks.add_widget(scrolled(self.bosses_section))
+                unlocks.add_widget(scrolled(self.characters_section, self.wins_section))
+                self.add_client_tab("Unlocks", unlocks)
+                self._last_unlocks = ()  # never equal to a real state, so the first tick renders
+                Clock.schedule_interval(self.refresh_unlocks, 1)
+                return container
+
+            def refresh_unlocks(self, _dt) -> None:
+                # Only rebuilt on change - received items, checked locations and slot_data all land
+                # asynchronously, so polling once a second is simpler than hooking every path.
+                state = None if ctx.slot is None else ctx.tracker_state()
+                if state == self._last_unlocks:
+                    return
+                self._last_unlocks = state
+                if state is None:
+                    for section, title in ((self.bosses_section, "Bosses"),
+                                           (self.characters_section, "Characters"),
+                                           (self.wins_section, "Win Count")):
+                        section.set_rows(title, [], "Connect to a slot to see this.")
+                    return
+                bosses, characters, wins = state["bosses"], state["characters"], state["wins"]
+                self.bosses_section.set_rows(
+                    f"Bosses ({count_done(bosses)}/{len(bosses)} cleared)", bosses,
+                    "No boss checks in this slot.",
+                )
+                received = sum(1 for r in characters if r.status == tracker.AVAILABLE)
+                self.characters_section.set_rows(
+                    f"Characters ({received}/{len(characters)} unlocked)", characters,
+                    "Character access isn't gated for this slot.",
+                )
+                self.wins_section.set_rows(
+                    f"Win Count ({state['win_count']} wins)", wins,
+                    "Win count checks are off for this slot.",
+                )
 
         self.ui = NightreignManager(self)
         self.ui_task = asyncio.create_task(self.ui.async_run(), name="UI")
@@ -338,6 +474,13 @@ class NightreignContext(CommonContext):
             if self.slot_data.get("starting_murk", 0):
                 self.currency_items.add("Murk")
             self.everdark_nightlords = set(self.slot_data.get("everdark_nightlords") or [])
+            # Seeds generated before these keys existed fall back to every boss/character.
+            self.included_nightlords = list(
+                self.slot_data.get("included_nightlords") or ACCESS_NIGHTLORDS
+            )
+            self.included_characters = list(
+                self.slot_data.get("included_characters") or ACCESS_CHARACTERS
+            )
             # starting_boss_everdark (see Options.py's StartingBoss/__init__.py's generate_early())
             # decides which set the starting_boss name goes into - Everdark Sovereigns are separate
             # bosses from their base Nightlord, so an everdark_* starting_boss frees the Everdark
@@ -440,14 +583,33 @@ class NightreignContext(CommonContext):
     def _owned_item_names(self) -> set:
         # freed_nightlords/freed_everdark_nightlords (from starting_boss) and freed_characters
         # (from starting_character) are stitched in as synthetic "X Access"/"Everdark X Access"/
-        # "X Character Access" entries so every downstream consumer - flag-firing, overlay's
-        # locked/unlocked display - treats them exactly like an already-received Access item, with
+        # "X Character Access" entries so every downstream consumer - flag-firing, the Unlocks
+        # tab - treats them exactly like an already-received Access item, with
         # no separate code path needed.
         owned = {lookup_id_to_name.get(i.item) for i in self.items_received}
         owned |= {f"{name} Access" for name in self.freed_nightlords}
         owned |= {f"Everdark {name} Access" for name in self.freed_everdark_nightlords}
         owned |= {f"{name} Character Access" for name in self.freed_characters}
         return owned
+
+    def tracker_state(self) -> dict:
+        """Rows for the client's Unlocks tab (see tracker.py for the color rules). Characters are
+        only listed when gated - ungated, there's nothing to receive. Bosses are always listed,
+        since their checks are worth tracking either way."""
+        owned = self._owned_item_names()
+        slot_locations = set(self.checked_locations) | set(self.missing_locations)
+        sent = set(self.checked_locations) | self.checked_location_ids
+        return {
+            "bosses": tracker.boss_rows(
+                owned, slot_locations, sent, self.included_nightlords, self.everdark_nightlords,
+                self.included_characters, self.per_character_checks, self.gate_boss_access,
+                self.gate_character_access,
+            ),
+            "characters": (tracker.character_rows(owned, self.included_characters)
+                           if self.gate_character_access else []),
+            "wins": tracker.win_count_rows(slot_locations, sent, self.win_count_thresholds),
+            "win_count": self.win_count,
+        }
 
     async def _sync_event_flags(self) -> None:
         if not (self.gate_boss_access or self.gate_character_access) or self.writer is None:
@@ -509,7 +671,7 @@ class NightreignContext(CommonContext):
         gate_boss_access's flag write is all-or-nothing (see the module comment above
         _owned_item_names) - receiving any one base-boss Access item reveals all 6 secondary
         bosses in the game's own menu, so nothing in-game stops the player from selecting one they
-        don't actually have Access to. The overlay already shows this passively; this is the same
+        don't actually have Access to. The client's Unlocks tab already shows this passively; this is the same
         check surfaced as a log line for the "basically wasting their run" case the player might
         not notice mid-run."""
         is_everdark = everdark and boss_name in EVERDARK_NIGHTLORDS
@@ -998,6 +1160,8 @@ class NightreignContext(CommonContext):
                     self._locked_boss_warned = False
                     self._locked_character_warned = False
                     self._locked_run_drop_withheld_warned = False
+                    self._last_in_hub = None
+                    self._win_handled_this_run = False
                     try:
                         if self.reader.connect():
                             logger.info("Connected to nightreign.exe")
@@ -1046,9 +1210,11 @@ class NightreignContext(CommonContext):
                         await asyncio.sleep(BUILD_MISMATCH_BACKOFF)
                         continue
 
+                # Fallback win signal - the primary one is the buff-pick counter's Nightlord-kill
+                # tick below, which also covers Night Aspect (this pulse never fires for it).
                 pulse = self.reader.read_outcome_pulse()
                 if pulse == 1 and self._last_pulse == 0:
-                    await self._handle_win()
+                    await self._trigger_win("outcome pulse")
                 if pulse is not None:
                     self._last_pulse = pulse
 
@@ -1062,6 +1228,13 @@ class NightreignContext(CommonContext):
                 # Read once per tick and shared below - True in hub/menu/loading, False in an
                 # active run, None if transiently unreadable (e.g. a scene transition).
                 in_hub = self.reader.read_hub_state()
+                if in_hub is False and self._last_in_hub is True:
+                    # Re-arm win detection on Expedition entry only, not on hub arrival: the pulse
+                    # can still be held high after in_hub flips True (the results screen), and
+                    # re-arming there would let it count the same win twice.
+                    self._win_handled_this_run = False
+                if in_hub is not None:
+                    self._last_in_hub = in_hub
 
                 if (self.unlock_all_bosses_in_game and self.writer is not None
                         and self._all_bosses_unlock_addr is not None
@@ -1134,7 +1307,7 @@ class NightreignContext(CommonContext):
                     # reset to 0/DAY_PHASE_DAY_1 at the start of each real Expedition anyway).
                     self._last_day_phase = None
                     self._last_weak_reward_raw = None
-                    self._last_strong_reward_raw = None
+                    self._last_buff_pick_raw = None
                 elif in_hub is False:
                     extra_check_timestamp = datetime.now(timezone.utc).isoformat()
 
@@ -1153,7 +1326,7 @@ class NightreignContext(CommonContext):
                         self._last_day_phase = day_phase
 
                     if self.weak_reward_checks:
-                        weak_raw = self.reader.read_weak_reward_count()
+                        weak_raw = self.reader.read_weapon_pickup_count()
                         if weak_raw is not None:
                             if (self._last_weak_reward_raw is not None
                                     and weak_raw > self._last_weak_reward_raw):
@@ -1165,18 +1338,22 @@ class NightreignContext(CommonContext):
                                 )
                             self._last_weak_reward_raw = weak_raw
 
-                    if self.strong_reward_checks:
-                        strong_raw = self.reader.read_strong_reward_count()
-                        if strong_raw is not None:
-                            if (self._last_strong_reward_raw is not None
-                                    and strong_raw > self._last_strong_reward_raw):
-                                await self._credit_extra_check(
-                                    self.strong_reward_counts, location_name_strong_reward,
-                                    self.strong_reward_thresholds, "strong_reward",
-                                    extra_check_timestamp,
-                                    increment=strong_raw - self._last_strong_reward_raw,
-                                )
-                            self._last_strong_reward_raw = strong_raw
+                    # Always read, not just when strong_reward_checks is on: this counter's tick in
+                    # the Day 3 arena is the primary Nightlord-kill signal (see
+                    # game_data.is_nightlord_kill_tick).
+                    buff_raw = self.reader.read_buff_pick_count()
+                    if buff_raw is not None:
+                        if is_nightlord_kill_tick(self._last_buff_pick_raw, buff_raw, day_phase):
+                            await self._trigger_win("buff-pick counter in the Nightlord arena")
+                        if (self.strong_reward_checks and self._last_buff_pick_raw is not None
+                                and buff_raw > self._last_buff_pick_raw):
+                            await self._credit_extra_check(
+                                self.strong_reward_counts, location_name_strong_reward,
+                                self.strong_reward_thresholds, "strong_reward",
+                                extra_check_timestamp,
+                                increment=buff_raw - self._last_buff_pick_raw,
+                            )
+                        self._last_buff_pick_raw = buff_raw
 
                 if (
                     self._receives_in_run_items()
@@ -1219,30 +1396,6 @@ class NightreignContext(CommonContext):
                                 await self._deliver_pending_talismans()
 
                 if self.overlay is not None:
-                    locked_bosses = []
-                    locked_characters = []
-                    if self.gate_boss_access or self.gate_character_access:
-                        owned_names = self._owned_item_names()
-                        if self.gate_boss_access:
-                            locked_bosses = [
-                                name for name in ACCESS_NIGHTLORDS
-                                if f"{name} Access" not in owned_names
-                            ]
-                            # Everdark Sovereigns are separate bosses with their own Access item
-                            # (see Items.py) - self.everdark_nightlords (from slot_data, built in
-                            # __init__.py's create_regions()) is exactly this slot's included
-                            # Everdark entries, so this never lists one that isn't actually in the
-                            # pool/goal for this slot.
-                            locked_bosses += [
-                                f"Everdark {name}" for name in self.everdark_nightlords
-                                if f"Everdark {name} Access" not in owned_names
-                            ]
-                        if self.gate_character_access:
-                            locked_characters = [
-                                name for name in ACCESS_CHARACTERS
-                                if f"{name} Character Access" not in owned_names
-                            ]
-
                     # Boss/character debug panel - always updated regardless of gate_boss_access,
                     # since win detection matters for every player. Read every tick in both the hub
                     # and an Expedition, to compare readings across that boundary (skin bugs).
@@ -1267,20 +1420,9 @@ class NightreignContext(CommonContext):
                     # can restart under a new pid without the overlay being torn down/rebuilt
                     # (see the `self.overlay is None` guard), or it'd hunt a dead process forever.
                     self.overlay.state.update(
-                        bool(in_hub), locked_bosses, locked_characters, self.reader.pm.process_id,
-                        boss_raw, boss_desc, character, everdark, toast_text,
+                        self.reader.pm.process_id, boss_raw, boss_desc, character, everdark,
+                        toast_text,
                     )
-
-                    # Logged only on change, not every tick, so a log dump explains why the
-                    # locked-boss panel was/wasn't visible without spamming 4x/second. The
-                    # boss/character panel isn't included - those are expected to hold steady.
-                    state_key = (bool(in_hub), tuple(locked_bosses), tuple(locked_characters))
-                    if state_key != self._last_overlay_state:
-                        self._last_overlay_state = state_key
-                        logger.info(
-                            "Overlay state changed: in_hub=%s locked_bosses=%s locked_characters=%s",
-                            bool(in_hub), locked_bosses, locked_characters,
-                        )
             except Exception:
                 logger.exception("Error in Nightreign poll loop")
             await asyncio.sleep(POLL_INTERVAL)
@@ -1420,6 +1562,17 @@ class NightreignContext(CommonContext):
         await self._credit_threshold(
             self.win_count, self.win_count_thresholds, location_name_win_count, "win_count",
         )
+
+    async def _trigger_win(self, source: str) -> None:
+        """Runs _handle_win at most once per Expedition. Two independent signals can report the
+        same win - the buff-pick counter's Nightlord-kill tick and, ~7s later, the outcome pulse -
+        and without this a normal win would double-increment win_count. Re-armed on Expedition
+        entry in poll_loop."""
+        if self._win_handled_this_run:
+            return
+        self._win_handled_this_run = True
+        logger.info("Nightlord win detected via %s.", source)
+        await self._handle_win()
 
     async def _handle_win(self) -> None:
         boss = self.reader.read_boss_id()

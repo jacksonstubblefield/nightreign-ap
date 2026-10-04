@@ -130,7 +130,10 @@ BOSS_ID_OFFSET = 0xB50           # small clean int, +~10 per boss, drifts +/-4 -
                                   # below: a same-boss +1 delta was directly disproven live - a
                                   # confirmed normal Tricephalos run also read the value previously
                                   # assumed to mean "Everdark Tricephalos")
-OUTCOME_PULSE_OFFSET = 0xAF1     # byte; transient 0->1 pulse on a win only
+OUTCOME_PULSE_OFFSET = 0xAF1     # byte; 0->1 on a normal Nightlord win (~7s after the kill),
+                                  # held at 1 through the results screen until back in the lobby.
+                                  # NEVER fires for a Night Aspect win (live-confirmed: the ending/
+                                  # credits path skips it) - see BUFF_PICK_COUNTER_OFFSET below.
 
 # GameDataMan resolves to an object whose +0x8 qword is the player-data base;
 # character class lives on that base, not on GameMan.
@@ -155,19 +158,20 @@ EVERDARK_FLAG_OFFSET = 0xE0
 # lifecycle as EVERDARK_FLAG_OFFSET/BOSS_ID_OFFSET.
 DAY_NIGHT_PHASE_OFFSET = 0x00DE
 
-# GameDataMan-relative bytes: monotonic per-expedition pickup counters for "Weak"/"Strong" reward
-# tier POI clears (the game's own naming, confirmed via the Fextralife wiki - see nightreign-roadmap
-# memory). These count every reward-tier pickup during the current expedition, not just the final
-# boss - fire on item PICKUP, not on the kill blow (a cleared POI's counter doesn't move until the
-# player actually walks over and grabs the dropped orb). Resets to 0 at the start of each new
-# expedition, same lifecycle as the offsets above.
-#
-# KNOWN ISSUE, live-confirmed: also fires on ANY weapon pickup, not just genuine reward-tier POI
-# clears - including this world's own randomized weapon drops (see game_data.py's
-# REWARD_CHECK_THRESHOLDS comment for the full writeup). Not a reliable POI-tier-clear signal as
-# currently understood - client.py's weak_reward_checks/strong_reward_checks default to off.
-WEAK_REWARD_COUNTER_OFFSET = 0x0194
-STRONG_REWARD_COUNTER_OFFSET = 0x0604
+# GameDataMan-relative bytes: monotonic per-expedition counters, reset to 0 at the start of each new
+# expedition (same lifecycle as the offsets above). Originally found as "Weak"/"Strong" reward-tier
+# POI pickup counters, but a narrated live run (2026-10-04) showed what they actually count:
+# - WEAPON_PICKUP_COUNTER_OFFSET (+0x194): every weapon acquired, from any source - reward orbs,
+#   chests, and plain ground pickups alike, regardless of rarity (blue and orange both counted).
+# - BUFF_PICK_COUNTER_OFFSET (+0x604): buff/passive picks from boss reward orbs (field bosses, night
+#   bosses, a mid-run Nightlord invasion) - AND the Nightlord kill itself, which ticks it once at
+#   the kill (Augur and Night Aspect both live-confirmed; Night Aspect's phase-1 end did not tick
+#   it). Not every orb pick counts: a Night 2 "Winding Grace" pick did not. See client.py's
+#   _trigger_win / game_data.is_nightlord_kill_tick for how the Nightlord-kill tick is used.
+# The weak_reward_checks/strong_reward_checks options built on these stay default-off: neither is
+# a POI-clear signal.
+WEAPON_PICKUP_COUNTER_OFFSET = 0x0194
+BUFF_PICK_COUNTER_OFFSET = 0x0604
 
 UNKNOWN_BOSS_MESSAGE = (
     "boss_id {boss_id} not found - please report this to the mod owner "
@@ -595,21 +599,21 @@ class NightreignMemoryReader:
             return None
         return self._safe_read_ubyte(base + DAY_NIGHT_PHASE_OFFSET)
 
-    def read_weak_reward_count(self) -> Optional[int]:
-        """Raw monotonic count of Weak-tier reward pickups so far this expedition, or None if
-        unreadable - see WEAK_REWARD_COUNTER_OFFSET."""
+    def read_weapon_pickup_count(self) -> Optional[int]:
+        """Raw monotonic count of weapons acquired so far this expedition, or None if
+        unreadable - see WEAPON_PICKUP_COUNTER_OFFSET."""
         base = self._read_gamedataman_base()
         if base is None:
             return None
-        return self._safe_read_ubyte(base + WEAK_REWARD_COUNTER_OFFSET)
+        return self._safe_read_ubyte(base + WEAPON_PICKUP_COUNTER_OFFSET)
 
-    def read_strong_reward_count(self) -> Optional[int]:
-        """Raw monotonic count of Strong-tier reward pickups so far this expedition, or None if
-        unreadable - see STRONG_REWARD_COUNTER_OFFSET."""
+    def read_buff_pick_count(self) -> Optional[int]:
+        """Raw monotonic count of boss-reward buff picks (plus the Nightlord kill itself) so far
+        this expedition, or None if unreadable - see BUFF_PICK_COUNTER_OFFSET."""
         base = self._read_gamedataman_base()
         if base is None:
             return None
-        return self._safe_read_ubyte(base + STRONG_REWARD_COUNTER_OFFSET)
+        return self._safe_read_ubyte(base + BUFF_PICK_COUNTER_OFFSET)
 
     def read_hub_state(self) -> Optional[bool]:
         """True if in hub/menu/loading, False if in an active run, None if unreadable."""

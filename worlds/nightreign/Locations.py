@@ -162,7 +162,7 @@ def location_name_weak_reward(
 ) -> str:
     """Generates the location name for a cumulative "Weak Reward vs X N times" threshold (see
     game_data.REWARD_CHECK_THRESHOLDS, fixed at 1-5) - fires on collecting a Weak-tier
-    reward-tier POI pickup (see memory_reader.WEAK_REWARD_COUNTER_OFFSET) while on an expedition
+    reward-tier POI pickup (see memory_reader.WEAPON_PICKUP_COUNTER_OFFSET) while on an expedition
     against this Nightlord. "Weak"/"Strong" is the game's own naming for this reward tier.
 
     Args:
@@ -185,7 +185,7 @@ def location_name_strong_reward(
 ) -> str:
     """Generates the location name for a cumulative "Strong Reward vs X N times" threshold (see
     game_data.REWARD_CHECK_THRESHOLDS, fixed at 1-5) - fires on collecting a Strong-tier
-    reward-tier POI pickup (see memory_reader.STRONG_REWARD_COUNTER_OFFSET) while on an expedition
+    reward-tier POI pickup (see memory_reader.BUFF_PICK_COUNTER_OFFSET) while on an expedition
     against this Nightlord.
 
     Args:

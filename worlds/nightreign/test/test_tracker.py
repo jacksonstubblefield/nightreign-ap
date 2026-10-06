@@ -95,3 +95,47 @@ class TestOtherRows(unittest.TestCase):
         rows = tracker.win_count_rows({one, five}, {one}, [1, 5, 10])
         self.assertEqual([(r.name, r.status) for r in rows],
                          [("Win 1 Expedition", DONE), ("Win 5 Expeditions", AVAILABLE)])
+
+
+class TestGoalRows(unittest.TestCase):
+    @staticmethod
+    def _id(nightlord, character=None) -> int:
+        name = (f"Defeat {nightlord} as {character}" if character is not None
+                else f"Defeat {nightlord}")
+        return location_name_to_id[name]
+
+    def _shape(self, rows) -> list:
+        return [(r.name, r.status, [(c.name, c.status) for c in r.children]) for r in rows]
+
+    def test_any_character_group_is_gray_once_any_child_is(self) -> None:
+        group = [self._id("Night Aspect", c) for c in ("Wylder", "Guardian")]
+        rows = tracker.goal_rows([group], set(), set(), False, False)
+        self.assertEqual(self._shape(rows), [("Night Aspect (any character)", AVAILABLE,
+                                              [("Wylder", AVAILABLE), ("Guardian", AVAILABLE)])])
+        rows = tracker.goal_rows([group], set(), {group[1]}, False, False)
+        self.assertEqual(rows[0].status, DONE)
+
+    def test_singletons_collect_under_their_nightlord_in_roster_order(self) -> None:
+        groups = [[self._id("Gaping Jaw", "Guardian")], [self._id("Tricephalos", "Guardian")],
+                  [self._id("Tricephalos", "Wylder")]]
+        sent = {self._id("Tricephalos", "Wylder")}
+        rows = tracker.goal_rows(groups, set(), sent, False, False)
+        self.assertEqual(self._shape(rows), [
+            ("Tricephalos", AVAILABLE, [("Wylder", DONE), ("Guardian", AVAILABLE)]),
+            ("Gaping Jaw", AVAILABLE, [("Guardian", AVAILABLE)]),
+        ])
+
+    def test_gating_marks_pending_objectives_red(self) -> None:
+        groups = [[self._id("Tricephalos", "Wylder")], [self._id("Tricephalos", "Guardian")]]
+        owned = {"Tricephalos Access", "Wylder Character Access"}
+        rows = tracker.goal_rows(groups, owned, set(), True, True)
+        self.assertEqual(self._shape(rows), [
+            ("Tricephalos", AVAILABLE, [("Wylder", AVAILABLE), ("Guardian", LOCKED)]),
+        ])
+
+    def test_boss_only_rows_and_progress(self) -> None:
+        groups = [[self._id("Tricephalos")], [self._id("Gaping Jaw")]]
+        sent = {self._id("Gaping Jaw")}
+        rows = tracker.goal_rows(groups, set(), sent, True, False)
+        self.assertEqual(self._shape(rows), [("Tricephalos", LOCKED, []), ("Gaping Jaw", DONE, [])])
+        self.assertEqual(tracker.goal_progress(groups, sent), (1, 2))

@@ -13,7 +13,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Optional
 
-from .game_data import EVERDARK_NIGHTLORDS, NIGHTLORD_BONUS_INDICES
+from .game_data import CHARACTERS, EVERDARK_NIGHTLORDS, NIGHTLORD_BONUS_INDICES, NIGHTLORDS
 from .Locations import (location_name, location_name_boss_only, location_name_everdark,
                         location_name_everdark_boss_only, location_name_kill_bonus,
                         location_name_night1, location_name_night2, location_name_to_id,
@@ -122,3 +122,74 @@ def win_count_rows(slot_locations: set, sent: set, thresholds: list) -> list[Tra
             rows.append(TrackerRow(location_name_win_count(count),
                                    DONE if location_id in sent else AVAILABLE))
     return rows
+
+
+# Location id -> (nightlord, character or None) for every base Defeat check - the only locations
+# goal_groups can contain (see __init__.py's create_regions()).
+_DEFEAT_SUBJECTS = {
+    **{location_name_to_id[location_name_boss_only(n)]: (n, None) for n in NIGHTLORDS},
+    **{location_name_to_id[location_name(c, n)]: (n, c) for n in NIGHTLORDS for c in CHARACTERS},
+}
+
+
+def goal_rows(
+    goal_groups: list, owned: set, sent: set, gate_boss_access: bool, gate_character_access: bool,
+) -> list[TrackerRow]:
+    """One row per Nightlord the goal involves, in roster order. goal_groups (from slot_data) is a
+    list of any-of groups that must ALL be satisfied:
+    - a multi-id group ("beat X with any character") becomes "X (any character)", gray once ANY
+      of its character children is gray;
+    - single-id groups for the same Nightlord ("beat X as A", "beat X as B") collect under one
+      "X" row, gray only once EVERY child is gray;
+    - a single boss-only id is a plain "X" row.
+    A pending objective is red when its Access item(s) aren't received, else green."""
+
+    def status(location_id: int, nightlord: str, character: Optional[str]) -> str:
+        if location_id in sent:
+            return DONE
+        if gate_boss_access and f"{nightlord} Access" not in owned:
+            return LOCKED
+        if (gate_character_access and character is not None
+                and f"{character} Character Access" not in owned):
+            return LOCKED
+        return AVAILABLE
+
+    def child(location_id: int) -> tuple[int, TrackerRow]:
+        nightlord, character = _DEFEAT_SUBJECTS[location_id]
+        return CHARACTERS.index(character), TrackerRow(character, status(location_id, nightlord, character))
+
+    any_of: dict[str, list] = {}
+    all_of: dict[str, list] = {}
+    boss_only: dict[str, str] = {}
+    for group in goal_groups:
+        ids = [i for i in group if i in _DEFEAT_SUBJECTS]
+        if not ids:
+            continue
+        nightlord, character = _DEFEAT_SUBJECTS[ids[0]]
+        if len(ids) > 1:
+            any_of[nightlord] = [row for _, row in sorted((child(i) for i in ids),
+                                                          key=lambda pair: pair[0])]
+        elif character is None:
+            boss_only[nightlord] = status(ids[0], nightlord, None)
+        else:
+            all_of.setdefault(nightlord, []).append(child(ids[0]))
+
+    rows = []
+    for nightlord in NIGHTLORDS:
+        if nightlord in any_of:
+            children = any_of[nightlord]
+            statuses = {c.status for c in children}
+            rollup = (DONE if DONE in statuses else AVAILABLE if AVAILABLE in statuses else LOCKED)
+            rows.append(TrackerRow(f"{nightlord} (any character)", rollup, children))
+        if nightlord in all_of:
+            children = [row for _, row in sorted(all_of[nightlord], key=lambda pair: pair[0])]
+            rows.append(TrackerRow(nightlord, _rollup(children), children))
+        if nightlord in boss_only:
+            rows.append(TrackerRow(nightlord, boss_only[nightlord]))
+    return rows
+
+
+def goal_progress(goal_groups: list, sent: set) -> tuple[int, int]:
+    """(groups satisfied, total groups) - the same test as client.py's _goal_complete."""
+    done = sum(1 for group in goal_groups if any(i in sent for i in group))
+    return done, len(goal_groups)

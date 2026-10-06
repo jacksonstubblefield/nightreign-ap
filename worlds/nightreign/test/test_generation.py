@@ -24,6 +24,7 @@ from worlds.nightreign.Locations import (location_name, location_name_boss_only,
                                           location_name_kill_bonus, location_name_night1,
                                           location_name_night2, location_name_strong_reward,
                                           location_name_weak_reward)
+from worlds.nightreign.tracker import goal_rows
 
 # All base Nightlords plus every Everdark Sovereign entry (e.g. "Everdark Tricephalos") - the
 # IncludedNightlords default, spelled out explicitly by tests exercising Everdark checks.
@@ -419,6 +420,11 @@ class NightreignGoalAllBossesAnyCharacterTest(WorldTestBase):
         for group in self.world.goal_groups:
             self.assertEqual(len(group), 2)  # Wylder + Guardian
 
+    def test_tracker_shows_one_any_character_row_per_nightlord(self) -> None:
+        rows = goal_rows(self.world.goal_groups, set(), set(), False, False)
+        self.assertEqual([r.name for r in rows], [f"{n} (any character)" for n in NIGHTLORDS])
+        self.assertTrue(all(len(r.children) == 2 for r in rows))
+
 
 class NightreignGoalRandomTest(WorldTestBase):
     game = "Elden Ring Nightreign"
@@ -436,6 +442,11 @@ class NightreignGoalRandomTest(WorldTestBase):
             self.assertEqual(len(group), 1)
         all_ids = [location_id for group in self.world.goal_groups for location_id in group]
         self.assertEqual(len(all_ids), len(set(all_ids)))  # no duplicate objectives
+
+    def test_tracker_shows_every_objective(self) -> None:
+        # goal_rows silently skips ids it can't map, so this catches a Defeat id it doesn't know.
+        rows = goal_rows(self.world.goal_groups, set(), set(), False, False)
+        self.assertEqual(sum(len(r.children) for r in rows), len(self.world.goal_groups))
 
 
 class NightreignStartingBossEverdarkTest(WorldTestBase):

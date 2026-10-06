@@ -145,6 +145,14 @@ CURRENCY_SLOT_DATA_KEYS = {
 }
 HUB_CURRENCIES = ("Murk", "Sovereign Sigil")
 
+# slot_data "goal" key (Options.py's Goal) -> Unlocks tab header text
+GOAL_DISPLAY_NAMES = {
+    "night_aspect": "Night Aspect",
+    "all_bosses": "All Bosses",
+    "all_bosses_any_character": "All Bosses Any Character",
+    "random_subset": "Random",
+}
+
 # Item received toast duration
 TOAST_DURATION_SECONDS = 3.0
 
@@ -401,9 +409,11 @@ class NightreignContext(CommonContext):
                 self.bosses_section = TrackerSection("Bosses", self.expanded_bosses)
                 self.characters_section = TrackerSection("Characters", set())
                 self.wins_section = TrackerSection("Win Count", set())
+                self.goal_section = TrackerSection("Goal", set())
                 unlocks = MDBoxLayout(orientation="horizontal")
                 unlocks.add_widget(scrolled(self.bosses_section))
-                unlocks.add_widget(scrolled(self.characters_section, self.wins_section))
+                unlocks.add_widget(scrolled(self.goal_section, self.characters_section,
+                                            self.wins_section))
                 self.add_client_tab("Unlocks", unlocks)
                 self._last_unlocks = ()  # never equal to a real state, so the first tick renders
                 Clock.schedule_interval(self.refresh_unlocks, 1)
@@ -417,12 +427,19 @@ class NightreignContext(CommonContext):
                     return
                 self._last_unlocks = state
                 if state is None:
-                    for section, title in ((self.bosses_section, "Bosses"),
+                    for section, title in ((self.goal_section, "Goal"),
+                                           (self.bosses_section, "Bosses"),
                                            (self.characters_section, "Characters"),
                                            (self.wins_section, "Win Count")):
                         section.set_rows(title, [], "Connect to a slot to see this.")
                     return
                 bosses, characters, wins = state["bosses"], state["characters"], state["wins"]
+                goal_done, goal_total = state["goal_progress"]
+                self.goal_section.set_rows(
+                    f"Goal: {GOAL_DISPLAY_NAMES.get(state['goal'], state['goal'])} "
+                    f"({goal_done}/{goal_total})", state["goal_rows"],
+                    "No goal list in this seed - the goal is checking every location.",
+                )
                 self.bosses_section.set_rows(
                     f"Bosses ({count_done(bosses)}/{len(bosses)} cleared)", bosses,
                     "No boss checks in this slot.",
@@ -609,6 +626,10 @@ class NightreignContext(CommonContext):
                            if self.gate_character_access else []),
             "wins": tracker.win_count_rows(slot_locations, sent, self.win_count_thresholds),
             "win_count": self.win_count,
+            "goal": self.goal,
+            "goal_rows": tracker.goal_rows(self.goal_groups, owned, sent, self.gate_boss_access,
+                                           self.gate_character_access),
+            "goal_progress": tracker.goal_progress(self.goal_groups, sent),
         }
 
     async def _sync_event_flags(self) -> None:

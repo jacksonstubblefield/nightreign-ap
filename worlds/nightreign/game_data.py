@@ -41,7 +41,8 @@ KNOWN_BOSS_IDS = {
     1090: "Dreglord",
 }
 # Every raw boss_id actually read in a live run, kept even when it already falls inside a
-# window - test_boss_ids.py checks each still resolves to the right boss.
+# window - test_boss_ids.py checks each still resolves to the right boss. Also the fallback for
+# raws outside every window: boss_id_candidates() matches these exactly when no window does.
 OBSERVED_BOSS_IDS = {
     2: "Tricephalos",
     12: "Gaping Jaw",
@@ -56,9 +57,19 @@ OBSERVED_BOSS_IDS = {
     1080: "Balancers",
     1084: "Balancers",           # user-reported 2026-10-02, Wylder, non-Everdark
     1090: "Dreglord",
+    1095: "Dreglord",            # user-reported 2026-10-07, Duchess, non-Everdark - outside window
 }
 # Each base covers base-4..base+4, leaving x5 as a gap between neighbours
 DRIFT_TOLERANCE = 4
+
+
+def boss_id_candidates(raw: int, tolerance: int = DRIFT_TOLERANCE) -> set:
+    """Boss names whose KNOWN_BOSS_IDS window contains raw; failing that, an exact
+    OBSERVED_BOSS_IDS match for raws sighted live outside every window."""
+    candidates = {name for base, name in KNOWN_BOSS_IDS.items() if abs(raw - base) <= tolerance}
+    if not candidates and raw in OBSERVED_BOSS_IDS:
+        candidates = {OBSERVED_BOSS_IDS[raw]}
+    return candidates
 
 # +0xB50 reads this sentinel when no boss is selected (hub/menu). With DRIFT_TOLERANCE=4 this
 # sits right inside Tricephalos's (base 0) match window, so it must be checked before

@@ -33,7 +33,6 @@ try:
         DRIFT_TOLERANCE,
         ITEMDROP_CALL_AOB,
         ITEMDROP_CALL_FUNC_OFFSET,
-        KNOWN_BOSS_IDS,
         MAPITEMMAN_AOB,
         MAPITEMMAN_AOB_OFFSET,
         MURK_GRANT_AOB,
@@ -45,6 +44,7 @@ try:
         WORLDCHRMAN_AOB,
         WORLDCHRMAN_ANIM_FINAL_OFFSET,
         WORLDCHRMAN_ANIM_OFFSETS,
+        boss_id_candidates,
     )
 except ImportError:
     # Run directly as a script, not as part of the worlds.nightreign package -
@@ -61,7 +61,6 @@ except ImportError:
         DRIFT_TOLERANCE,
         ITEMDROP_CALL_AOB,
         ITEMDROP_CALL_FUNC_OFFSET,
-        KNOWN_BOSS_IDS,
         MAPITEMMAN_AOB,
         MAPITEMMAN_AOB_OFFSET,
         MURK_GRANT_AOB,
@@ -73,6 +72,7 @@ except ImportError:
         WORLDCHRMAN_AOB,
         WORLDCHRMAN_ANIM_FINAL_OFFSET,
         WORLDCHRMAN_ANIM_OFFSETS,
+        boss_id_candidates,
     )
 
 PROCESS_NAME = "nightreign.exe"
@@ -213,7 +213,7 @@ class BossIdReading:
 
 def match_boss_id(boss_id: int, tolerance: int = DRIFT_TOLERANCE) -> BossIdReading:
     """Returns a BossIdReading for the given raw boss_id, matching against 
-    KNOWN_BOSS_IDS with the given tolerance.
+    KNOWN_BOSS_IDS with the given tolerance, falling back to exact OBSERVED_BOSS_IDS sightings.
 
     Args:
         boss_id (int): The raw boss_id read from memory.
@@ -224,8 +224,7 @@ def match_boss_id(boss_id: int, tolerance: int = DRIFT_TOLERANCE) -> BossIdReadi
     """
     if boss_id == UNSET_SENTINEL:
         return BossIdReading(raw=boss_id, status="unset")
-    candidates = sorted({name for known_id, name in KNOWN_BOSS_IDS.items() 
-                         if abs(boss_id - known_id) <= tolerance})
+    candidates = sorted(boss_id_candidates(boss_id, tolerance))
     if len(candidates) == 1:
         return BossIdReading(raw=boss_id, status="matched", name=candidates[0])
     if len(candidates) > 1:

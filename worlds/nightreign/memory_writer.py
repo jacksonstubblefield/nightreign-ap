@@ -67,6 +67,17 @@ _TRAMPOLINE_SUFFIX = bytes.fromhex(
 )
 
 
+def set_player_hp(pm: pymem.Pymem, hp_address: int, hp: int) -> bool:
+    """Writes the local player's HP (address from memory_reader's player_hp_address()). A plain
+    data write, no trampoline: writing 0 is DeathLink's receive path - the game treats it exactly
+    like a fatal hit (see game_data.PLAYER_HP_OFFSETS). False if the write failed."""
+    try:
+        pm.write_int(hp_address, hp)
+        return True
+    except (pymem.exception.MemoryWriteError, pymem.exception.WinAPIError):
+        return False
+
+
 def _build_trampoline(eventflag_base_a_addr: int) -> bytes:
     return _TRAMPOLINE_PREFIX + struct.pack("<Q", eventflag_base_a_addr) + _TRAMPOLINE_SUFFIX
 

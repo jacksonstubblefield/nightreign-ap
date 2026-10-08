@@ -366,6 +366,30 @@ def is_flying_animation(current_animation: int) -> bool:
     return current_animation in FLYING_ANIMATION_RANGE
 
 
+# [[[[WorldChrMan+0x174E8]+0x1B8]+0x00]+0x140] is the local player's live HP (int32), +0x144 max HP -
+# the user's CE table's Host:getHp()/getMaxHp(), same PlayerIns (WorldChrMan+0x174E8) as the
+# animation chain above. Live-tested 2026-10-08: writing 0 here is indistinguishable from a real
+# fatal hit (field: the full death/respawn sequence; that's DeathLink's receive path).
+PLAYER_HP_OFFSETS = (0x174E8, 0x1B8, 0x00)
+PLAYER_HP_FINAL_OFFSET = 0x140
+PLAYER_MAX_HP_FINAL_OFFSET = 0x144
+
+# The first animation after HP hits 0 says, within ~0.5s, what the game decided - live-recorded
+# 2026-10-08, solo: every death with no save available (4 field deaths, 3 field DeathLink writes, a
+# Night 1 boss down with saves spent) went 17002/17022 -> 18002/18022, then a full-HP respawn (or
+# the run ending, in a boss fight). Both saved downs in the Night 1 boss fight (once-per-day solo
+# revive: 17342 -> 70020; Wending Grace: 17302) instead came back at exactly 50% HP. The low two
+# digits vary per down, so these are ranges. 18xxx is NOT a death signal - 18300 showed up on both
+# saves. Co-op teammate-revive downs haven't been recorded yet.
+DYING_ANIMATION_RANGE = range(17000, 17100)
+DOWNED_ANIMATION_RANGE = range(17300, 17400)
+
+
+def is_dying_animation(current_animation: int) -> bool:
+    """True if `current_animation` is the start of a death with no save coming."""
+    return current_animation in DYING_ANIMATION_RANGE
+
+
 # Each grantable currency's counter offset, keyed by currency name - the same keys
 # memory_reader.py's resolve_currency_target() uses to pick each currency's grant AOB.
 CURRENCY_COUNTER_OFFSETS = {

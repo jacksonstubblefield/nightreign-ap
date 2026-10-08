@@ -564,4 +564,5 @@ class NightreignWorld(World):
             "bosses_with_characters": self.options.bosses_with_characters.current_key,
             "goal": self.options.goal.current_key,
             "goal_groups": self.goal_groups,
+            "death_link": self.options.death_link.current_key,
         }

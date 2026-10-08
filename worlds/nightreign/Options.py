@@ -255,6 +255,26 @@ class WinCountUpTo(Range):
 #     default = 0
 
 
+class DeathLinkMode(Choice):
+    """
+    "Off": no DeathLink.
+
+    "Dead": only a full death sends a DeathLink
+
+    "Downed": being downed at all sends a DeathLink
+
+    Can be changed while playing with the client's /deathlink command.
+
+    New and not yet tested with other players - please report any feedback or bugs.
+    """
+
+    display_name = "Death Link"
+    option_off = 0
+    option_dead = 1
+    option_downed = 2
+    default = 0
+
+
 class Goal(Choice):
     """What this slot needs to accomplish to complete its goal.
 
@@ -327,6 +347,9 @@ option_groups = [
         # WeakRewardChecks,
         # StrongRewardChecks,
     ]),
+    OptionGroup("Multiworld", [
+        DeathLinkMode,
+    ]),
 ]
 
 
@@ -353,3 +376,4 @@ class NightreignOptions(PerGameCommonOptions):
     goal: Goal
     goal_random_min: GoalRandomMin
     goal_random_max: GoalRandomMax
+    death_link: DeathLinkMode

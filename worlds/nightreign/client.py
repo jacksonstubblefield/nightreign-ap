@@ -108,6 +108,7 @@ from .game_data import (ACCESS_CHARACTERS, ACCESS_ITEM_EVENT_FLAGS, ACCESS_NIGHT
                         NIGHTLORD_BONUS_INDICES, currency_bundle_names, is_flying_animation,
                         is_nightlord_kill_tick, starting_free_characters,
                         starting_free_everdark_nightlords, starting_free_nightlords)
+from .death_link import DEATH_LINK_MODES, DeathLinkDetector
 from .item_data import (EFFECT_CAP_MAP, TALISMAN_TABLE, WEAPON_ART_TABLE, WEAPON_TABLE,
                         natural_weapon_tier, roll_effect_tier, roll_upgrade_tier)
 from .Items import lookup_id_to_name
@@ -117,7 +118,7 @@ from .Locations import (location_name, location_name_boss_only, location_name_ev
                         location_name_to_id, location_name_weak_reward, location_name_win_count)
 from .memory_reader import EACDetectedError, NightreignMemoryReader, PointerNotFoundError
 from .memory_writer import (NightreignCurrencyWriter, NightreignItemDropWriter,
-                            NightreignMemoryWriter)
+                            NightreignMemoryWriter, set_player_hp)
 from . import tracker
 from .overlay import NightreignOverlay
 
@@ -155,6 +156,8 @@ GOAL_DISPLAY_NAMES = {
 
 # Item received toast duration
 TOAST_DURATION_SECONDS = 3.0
+# Received-DeathLink toast - longer, since it lands at the same moment you go down.
+DEATH_LINK_TOAST_SECONDS = 6.0
 
 
 def _safe_filename_component(text: str) -> str:
@@ -189,6 +192,22 @@ class NightreignCommandProcessor(ClientCommandProcessor):
     def _cmd_status(self):
         """Show the memory reader's current live readings."""
         self.ctx.print_status()
+
+    def _cmd_deathlink(self, mode: str = "") -> bool:
+        """Toggle DeathLink on/off, or set it: /deathlink [off|dead|downed]. Lasts until the
+        client is closed."""
+        mode = mode.lower()
+        if not mode:
+            if self.ctx.death_link_mode != "off":
+                mode = "off"
+            else:
+                mode = self.ctx.slot_death_link_mode if self.ctx.slot_death_link_mode != "off" else "dead"
+        if mode not in DEATH_LINK_MODES:
+            self.output(f"Unknown DeathLink mode '{mode}' - use one of: {', '.join(DEATH_LINK_MODES)}.")
+            return False
+        self.ctx.set_death_link_mode(mode, from_command=True)
+        self.output(f"DeathLink: {mode}")
+        return True
 
 
 class NightreignContext(CommonContext):
@@ -251,7 +270,14 @@ class NightreignContext(CommonContext):
     _locked_character_warned: bool
     _locked_run_drop_withheld_warned: bool
     _toast_text: Optional[str]
+    _toast_style: str
     _toast_expiry: Optional[float]
+    death_link_mode: str
+    slot_death_link_mode: str
+    _death_link_overridden: bool
+    _death_link_detector: DeathLinkDetector
+    _pending_death_link: Optional[dict]
+    _death_link_last_in_hub: Optional[bool]
 
     def __init__(self, server_address: Optional[str], password: Optional[str]):
         super().__init__(server_address, password)
@@ -308,7 +334,14 @@ class NightreignContext(CommonContext):
         self._locked_character_warned = False
         self._locked_run_drop_withheld_warned = False
         self._toast_text = None
+        self._toast_style = "item"
         self._toast_expiry = None
+        self.death_link_mode = "off"
+        self.slot_death_link_mode = "off"
+        self._death_link_overridden = False
+        self._death_link_detector = DeathLinkDetector()
+        self._pending_death_link = None
+        self._death_link_last_in_hub = None
 
     def run_gui(self):
 
@@ -529,6 +562,11 @@ class NightreignContext(CommonContext):
             )
             self.goal = self.slot_data.get("goal", "all_bosses")
             self.goal_groups = self.slot_data.get("goal_groups") or []
+            self.slot_death_link_mode = self.slot_data.get("death_link", "off")
+            # A /deathlink typed this session wins over the slot's setting across reconnects.
+            self.set_death_link_mode(
+                self.death_link_mode if self._death_link_overridden else self.slot_death_link_mode
+            )
             logger.info("gate_boss_access=%s for this slot.", self.gate_boss_access)
             logger.info("gate_character_access=%s for this slot.", self.gate_character_access)
 
@@ -831,17 +869,18 @@ class NightreignContext(CommonContext):
         resolve failure disables randomize_weapons/randomize_talismans for the session rather than
         risk delivering (or crashing) mid-air - same conservative precedent as
         _ensure_item_drop_ready's own AOB failure handling."""
-        if (not (self.randomize_weapons or self.randomize_talismans) or not self.reader.connected
-                or self._worldchrman_slot is not None):
+        if (not (self.randomize_weapons or self.randomize_talismans or self.death_link_mode != "off")
+                or not self.reader.connected or self._worldchrman_slot is not None):
             return
         try:
             self._worldchrman_slot = self.reader.resolve_current_animation_target()
         except PointerNotFoundError as e:
-            logger.error("Flight-animation read path unavailable (%s) - disabling "
-                         "randomize_weapons/randomize_talismans this session, the read-only "
-                         "tracker is unaffected.", e)
+            logger.error("Player animation/HP read path unavailable (%s) - disabling "
+                         "randomize_weapons/randomize_talismans and DeathLink this session, the "
+                         "read-only tracker is unaffected.", e)
             self.randomize_weapons = False
             self.randomize_talismans = False
+            self.set_death_link_mode("off")
 
     def _pending_drop_keys(self, item_name: str, delivered_keys: set) -> set:
         """(index, player) keys for every received `item_name` filler item not yet delivered -
@@ -905,13 +944,15 @@ class NightreignContext(CommonContext):
         rng = random.Random(f"{self.seed_name}:{index}:{player}:talisman")
         return {"item_id": rng.choice(list(TALISMAN_TABLE))}
 
-    def _show_toast(self, text: str) -> None:
+    def _show_toast(self, text: str, style: str = "item",
+                    duration: float = TOAST_DURATION_SECONDS) -> None:
         """Arms the overlay's center-top toast for TOAST_DURATION_SECONDS. Timing lives here
         (asyncio side), not in overlay.py - poll_loop's per-tick overlay update re-passes this
         same text on every tick until the expiry it set has passed, then lets it go back to None,
         so the Tk thread just displays whatever it's handed rather than running its own clock."""
         self._toast_text = text
-        self._toast_expiry = time.monotonic() + TOAST_DURATION_SECONDS
+        self._toast_style = style
+        self._toast_expiry = time.monotonic() + duration
 
     async def _deliver_pending_drops(
         self, item_name: str, roll_fn, delivered_keys: set, event_type: str, log_label: str,
@@ -1183,6 +1224,8 @@ class NightreignContext(CommonContext):
                     self._locked_run_drop_withheld_warned = False
                     self._last_in_hub = None
                     self._win_handled_this_run = False
+                    self._death_link_detector.reset()
+                    self._death_link_last_in_hub = None
                     try:
                         if self.reader.connect():
                             logger.info("Connected to nightreign.exe")
@@ -1256,6 +1299,9 @@ class NightreignContext(CommonContext):
                     self._win_handled_this_run = False
                 if in_hub is not None:
                     self._last_in_hub = in_hub
+
+                if self.death_link_mode != "off" or self._pending_death_link is not None:
+                    await self._poll_death_link(in_hub)
 
                 if (self.unlock_all_bosses_in_game and self.writer is not None
                         and self._all_bosses_unlock_addr is not None
@@ -1442,11 +1488,83 @@ class NightreignContext(CommonContext):
                     # (see the `self.overlay is None` guard), or it'd hunt a dead process forever.
                     self.overlay.state.update(
                         self.reader.pm.process_id, boss_raw, boss_desc, character, everdark,
-                        toast_text,
+                        toast_text, self._toast_style,
                     )
             except Exception:
                 logger.exception("Error in Nightreign poll loop")
             await asyncio.sleep(POLL_INTERVAL)
+
+    # --- DeathLink ---
+    # See death_link.py for how a down/death is detected and why a down caused by a received
+    # DeathLink is never sent back out.
+
+    def set_death_link_mode(self, mode: str, from_command: bool = False) -> None:
+        self.death_link_mode = mode
+        if from_command:
+            self._death_link_overridden = True
+        self._death_link_detector.reset()
+        asyncio.create_task(self.update_death_link(mode != "off"))
+        self._ensure_animation_ready()
+
+    def on_deathlink(self, data: dict) -> None:
+        super().on_deathlink(data)
+        if self.death_link_mode != "off":
+            # Applied (or dropped) on the next poll tick, which has the live run/HP state.
+            self._pending_death_link = data
+
+    async def _poll_death_link(self, in_hub: Optional[bool]) -> None:
+        pending, self._pending_death_link = self._pending_death_link, None
+        source = pending.get("source", "someone") if pending else None
+        now = time.monotonic()
+
+        if in_hub:
+            if self._death_link_last_in_hub is False and self._death_link_detector.run_ended(
+                    self.death_link_mode, won=self._win_handled_this_run):
+                await self._send_death_link()
+            self._death_link_last_in_hub = True
+            if pending:
+                logger.info("DeathLink from %s ignored - not in an Expedition.", source)
+            return
+        if in_hub is None or self._worldchrman_slot is None:
+            if pending:
+                logger.info("DeathLink from %s ignored - game state unreadable right now.", source)
+            return
+        self._death_link_last_in_hub = False
+
+        hp_reading = self.reader.read_player_hp(self._worldchrman_slot)
+        animation = self.reader.read_current_animation(self._worldchrman_slot)
+        if pending:
+            self._apply_death_link(pending, hp_reading, animation, now)
+        hp, max_hp = hp_reading if hp_reading else (None, None)
+        if self._death_link_detector.update(hp, max_hp, animation, self.death_link_mode, now):
+            await self._send_death_link()
+
+    def _apply_death_link(self, data: dict, hp_reading: Optional[tuple], animation: Optional[int],
+                          now: float) -> None:
+        source = data.get("source", "someone")
+        if hp_reading is None or hp_reading[0] <= 0 or self._death_link_detector.downed:
+            logger.info("DeathLink from %s ignored - already down.", source)
+            return
+        if animation is not None and is_flying_animation(animation):
+            # Mid-flight (the Expedition fly-in, or respawning after a death) - untested there.
+            logger.info("DeathLink from %s ignored - mid-flight.", source)
+            return
+        address = self.reader.player_hp_address(self._worldchrman_slot)
+        if address is None or not set_player_hp(self.reader.pm, address, 0):
+            logger.warning("DeathLink from %s couldn't be applied - HP write failed.", source)
+            return
+        self._death_link_detector.link_applied(now)
+        cause = data.get("cause") or f"{source} died"
+        if self.overlay is not None:
+            self._show_toast(f"\u2620 DeathLink: {cause}", style="death_link",
+                             duration=DEATH_LINK_TOAST_SECONDS)
+
+    async def _send_death_link(self) -> None:
+        name = self.player_names.get(self.slot, self.auth or "Someone")
+        verb = "went down" if self.death_link_mode == "downed" else "died"
+        await self.send_death(f"{name} {verb} in Elden Ring Nightreign.")
+        if self.overlay is not None:
+            self._show_toast("\u2620 DeathLink sent", style="death_link")
 
     def _resolve_win_context(self) -> Optional[tuple]:
         """Reads boss_id/everdark/character together and returns (nightlord, everdark, character)
@@ -1760,8 +1878,8 @@ class NightreignContext(CommonContext):
         boss_desc = boss.name or boss.message or boss.status
         logger.info(
             "Nightreign status: character=%s  boss_id=%s (%s)  in_hub=%s  outcome_pulse=%s  "
-            "run_state=%s",
-            character, boss.raw, boss_desc, in_hub, pulse, self.run_state_path
+            "death_link=%s  run_state=%s",
+            character, boss.raw, boss_desc, in_hub, pulse, self.death_link_mode, self.run_state_path
         )
 
 

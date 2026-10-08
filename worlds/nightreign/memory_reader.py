@@ -36,6 +36,9 @@ try:
         MAPITEMMAN_AOB,
         MAPITEMMAN_AOB_OFFSET,
         MURK_GRANT_AOB,
+        PLAYER_HP_FINAL_OFFSET,
+        PLAYER_HP_OFFSETS,
+        PLAYER_MAX_HP_FINAL_OFFSET,
         RUNES_GRANT_AOB,
         SOVEREIGN_SIGIL_GRANT_AOB,
         TLS_FAKE_CONTEXT_RVA,
@@ -64,6 +67,9 @@ except ImportError:
         MAPITEMMAN_AOB,
         MAPITEMMAN_AOB_OFFSET,
         MURK_GRANT_AOB,
+        PLAYER_HP_FINAL_OFFSET,
+        PLAYER_HP_OFFSETS,
+        PLAYER_MAX_HP_FINAL_OFFSET,
         RUNES_GRANT_AOB,
         SOVEREIGN_SIGIL_GRANT_AOB,
         TLS_FAKE_CONTEXT_RVA,
@@ -479,6 +485,35 @@ class NightreignMemoryReader:
             return self.pm.read_int(ptr + WORLDCHRMAN_ANIM_FINAL_OFFSET)
         except (pymem.exception.MemoryReadError, pymem.exception.WinAPIError):
             return None
+
+    def player_hp_address(self, worldchrman_slot: int) -> Optional[int]:
+        """Address of the local player's live HP int (see game_data.PLAYER_HP_OFFSETS), or None
+        if unreadable. Re-walked on every call, same reasoning as read_current_animation() -
+        WorldChrMan's objects move across scene transitions, and a transient null mid-chain isn't
+        the process dying."""
+        try:
+            ptr = self.pm.read_ulonglong(worldchrman_slot)
+            if not ptr:
+                return None
+            for offset in PLAYER_HP_OFFSETS:
+                ptr = self.pm.read_ulonglong(ptr + offset)
+                if not ptr:
+                    return None
+            return ptr + PLAYER_HP_FINAL_OFFSET
+        except (pymem.exception.MemoryReadError, pymem.exception.WinAPIError):
+            return None
+
+    def read_player_hp(self, worldchrman_slot: int) -> Optional[tuple[int, int]]:
+        """(hp, max_hp) for the local player, or None if unreadable."""
+        address = self.player_hp_address(worldchrman_slot)
+        if address is None:
+            return None
+        try:
+            hp = self.pm.read_int(address)
+            max_hp = self.pm.read_int(address - PLAYER_HP_FINAL_OFFSET + PLAYER_MAX_HP_FINAL_OFFSET)
+        except (pymem.exception.MemoryReadError, pymem.exception.WinAPIError):
+            return None
+        return hp, max_hp
 
     def is_save_loaded(self, worldchrman_slot: int) -> Optional[bool]:
         """True if a save is actually loaded (hub or an active Expedition), False if still at the

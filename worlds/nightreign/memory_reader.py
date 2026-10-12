@@ -191,8 +191,8 @@ class BossIdReading:
 
     status is one of:
       "matched"    - raw resolved to exactly one known boss.
-      "ambiguous"  - raw is within tolerance of more than one known boss.
-      "unknown"    - raw isn't within tolerance of any known boss.
+      "ambiguous"  - raw falls in more than one known boss's window.
+      "unknown"    - raw falls in no known boss's window.
       "unset"      - raw is the sentinel value read while no boss is
                      selected (hub/menu) - not an error, just not a win.
       "unreadable" - GameMan itself couldn't be resolved right now (e.g. a
@@ -219,11 +219,11 @@ class BossIdReading:
 
 def match_boss_id(boss_id: int, tolerance: int = DRIFT_TOLERANCE) -> BossIdReading:
     """Returns a BossIdReading for the given raw boss_id, matching against 
-    KNOWN_BOSS_IDS with the given tolerance, falling back to exact OBSERVED_BOSS_IDS sightings.
+    KNOWN_BOSS_IDS windows (base..base+tolerance, plus the DLC_BOSS_ID_OFFSET copy), falling back to exact OBSERVED_BOSS_IDS sightings.
 
     Args:
         boss_id (int): The raw boss_id read from memory.
-        tolerance (int, optional): The tolerance for matching boss IDs. Defaults to DRIFT_TOLERANCE.
+        tolerance (int, optional): How far above its base a boss_id may drift. Defaults to DRIFT_TOLERANCE.
 
     Returns:
         BossIdReading: The result of the boss ID matching.

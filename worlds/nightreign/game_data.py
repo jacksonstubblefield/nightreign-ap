@@ -25,8 +25,11 @@ CHARACTERS = list(CHARACTER_CLASS_NAMES.values())
 # for either despite testing several candidates (117, 6950-6952, and 110+117 together) - see
 # ACCESS_ITEM_EVENT_FLAGS below for how that gap is handled.
 #
-# Keys are bases on multiples of 10; each boss matches its base +/- DRIFT_TOLERANCE, so the
-# 9-wide windows never overlap. Raw ids actually sighted live in OBSERVED_BOSS_IDS below.
+# Keys are bases on multiples of 10; each boss matches base..base+DRIFT_TOLERANCE, so the
+# windows tile without overlapping. Every boss can also read as DLC_BOSS_ID_OFFSET + its base
+# (the DLC prefixes "10": 1060, 1070, 1080, 1090 all sighted), so Balancers/Dreglord sit at 80/90
+# here even though only their 10xx form has been seen so far. Raw ids actually sighted live are
+# in OBSERVED_BOSS_IDS below.
 KNOWN_BOSS_IDS = {
     0: "Tricephalos",
     10: "Gaping Jaw",
@@ -36,10 +39,10 @@ KNOWN_BOSS_IDS = {
     50: "Darkdrift Knight",
     60: "Fissure in the Fog",
     70: "Night Aspect",
-    1070: "Night Aspect",        # DLC map variant
-    1080: "Balancers",
-    1090: "Dreglord",
+    80: "Balancers",
+    90: "Dreglord",
 }
+DLC_BOSS_ID_OFFSET = 1000
 # Every raw boss_id actually read in a live run, kept even when it already falls inside a
 # window - test_boss_ids.py checks each still resolves to the right boss. Also the fallback for
 # raws outside every window: boss_id_candidates() matches these exactly when no window does.
@@ -52,28 +55,36 @@ OBSERVED_BOSS_IDS = {
     43: "Equilibrious Beast",
     53: "Darkdrift Knight",
     61: "Fissure in the Fog",
+    65: "Fissure in the Fog",        # user-reported 2026-10-08
     73: "Night Aspect",
+    1060: "Fissure in the Fog",
     1074: "Night Aspect",        # user-reported 2026-10-02, DLC map
     1080: "Balancers",
     1084: "Balancers",           # user-reported 2026-10-02, Wylder, non-Everdark
     1090: "Dreglord",
-    1095: "Dreglord",            # user-reported 2026-10-07, Duchess, non-Everdark - outside window
+    1095: "Dreglord",            # user-reported 2026-10-07, Duchess, non-Everdark
 }
-# Each base covers base-4..base+4, leaving x5 as a gap between neighbours
-DRIFT_TOLERANCE = 4
+# Drift is upward only: every sighting so far reads base+0..base+5, never below base. Each base
+# covers base..base+9, so the windows tile 0-99 / 1000-1099 with no gaps.
+DRIFT_TOLERANCE = 9
 
 
 def boss_id_candidates(raw: int, tolerance: int = DRIFT_TOLERANCE) -> set:
-    """Boss names whose KNOWN_BOSS_IDS window contains raw; failing that, an exact
-    OBSERVED_BOSS_IDS match for raws sighted live outside every window."""
-    candidates = {name for base, name in KNOWN_BOSS_IDS.items() if abs(raw - base) <= tolerance}
+    """Boss names whose KNOWN_BOSS_IDS window (base..base+tolerance, or the same window shifted
+    by DLC_BOSS_ID_OFFSET) contains raw; failing that, an exact OBSERVED_BOSS_IDS match for raws
+    sighted live outside every window."""
+    candidates = {
+        name for base, name in KNOWN_BOSS_IDS.items()
+        for offset in (0, DLC_BOSS_ID_OFFSET)
+        if 0 <= raw - (base + offset) <= tolerance
+    }
     if not candidates and raw in OBSERVED_BOSS_IDS:
         candidates = {OBSERVED_BOSS_IDS[raw]}
     return candidates
 
-# +0xB50 reads this sentinel when no boss is selected (hub/menu). With DRIFT_TOLERANCE=4 this
-# sits right inside Tricephalos's (base 0) match window, so it must be checked before
-# tolerance-matching rather than left to fall through - see memory_reader.py.
+# +0xB50 reads this sentinel when no boss is selected (hub/menu). It sits just below
+# Tricephalos's (base 0) window, but is still checked explicitly before window-matching so it
+# reports "unset" rather than "unknown" - see memory_reader.py.
 UNSET_SENTINEL = -1
 
 

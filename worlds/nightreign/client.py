@@ -248,6 +248,7 @@ class NightreignContext(CommonContext):
     _last_buff_pick_raw: Optional[int]
     _last_in_hub: Optional[bool]
     _win_handled_this_run: bool
+    _arena_trace: Optional[dict]
     goal: str
     goal_groups: list
     writer: Optional[NightreignMemoryWriter]
@@ -313,6 +314,7 @@ class NightreignContext(CommonContext):
         self._last_buff_pick_raw = None
         self._last_in_hub = None
         self._win_handled_this_run = False
+        self._arena_trace = None
         self.goal = "all_bosses"
         self.goal_groups = []
         self.writer = None
@@ -1224,6 +1226,7 @@ class NightreignContext(CommonContext):
                     self._locked_run_drop_withheld_warned = False
                     self._last_in_hub = None
                     self._win_handled_this_run = False
+                    self._arena_trace = None
                     self._death_link_detector.reset()
                     self._death_link_last_in_hub = None
                     try:
@@ -1297,6 +1300,9 @@ class NightreignContext(CommonContext):
                     # can still be held high after in_hub flips True (the results screen), and
                     # re-arming there would let it count the same win twice.
                     self._win_handled_this_run = False
+                    self._arena_trace = None
+                if in_hub is True and self._last_in_hub is False:
+                    self._report_arena_exit_without_win()
                 if in_hub is not None:
                     self._last_in_hub = in_hub
 
@@ -1409,6 +1415,7 @@ class NightreignContext(CommonContext):
                     # the Day 3 arena is the primary Nightlord-kill signal (see
                     # game_data.is_nightlord_kill_tick).
                     buff_raw = self.reader.read_buff_pick_count()
+                    self._trace_arena(day_phase, buff_raw)
                     if buff_raw is not None:
                         if is_nightlord_kill_tick(self._last_buff_pick_raw, buff_raw, day_phase):
                             await self._trigger_win("buff-pick counter in the Nightlord arena")
@@ -1702,6 +1709,46 @@ class NightreignContext(CommonContext):
             self.win_count, self.win_count_thresholds, location_name_win_count, "win_count",
         )
 
+    def _trace_arena(self, day_phase: Optional[int], buff_raw: Optional[int]) -> None:
+        """Diagnostics only: records the win signals seen in the Day 3 Nightlord arena so a run
+        that ends there without a detected win (see _report_arena_exit_without_win) leaves enough
+        in the log/event file to tell which signal failed. Night Aspect's kill-tick trigger rests
+        on one live run, so this is what a failed report needs to come with."""
+        if day_phase != DAY_PHASE_DAY_3:
+            return
+        if self._arena_trace is None:
+            boss = self.reader.read_boss_id()
+            self._arena_trace = {
+                "raw_boss_id": boss.raw, "boss": boss.name, "buff_picks_at_entry": buff_raw,
+                "buff_picks_last": buff_raw, "pulse_seen": False,
+            }
+            logger.info("Entered the Nightlord arena (boss_id=%s, %s, buff_picks=%s).",
+                        boss.raw, boss.name or boss.status, buff_raw)
+            return
+        if buff_raw is not None and buff_raw != self._arena_trace["buff_picks_last"]:
+            logger.info("Nightlord arena: buff-pick counter %s -> %s.",
+                        self._arena_trace["buff_picks_last"], buff_raw)
+            self._arena_trace["buff_picks_last"] = buff_raw
+        if self._last_pulse == 1:
+            self._arena_trace["pulse_seen"] = True
+
+    def _report_arena_exit_without_win(self) -> None:
+        if self._arena_trace is None or self._win_handled_this_run:
+            return
+        trace = self._arena_trace
+        self._arena_trace = None
+        logger.warning(
+            "Left the Nightlord arena without detecting a win (boss_id=%s, buff_picks %s -> %s, "
+            "outcome pulse %s). If you won this fight, please report it with this log file.",
+            trace["raw_boss_id"], trace["buff_picks_at_entry"], trace["buff_picks_last"],
+            "seen" if trace["pulse_seen"] else "never fired",
+        )
+        self._append_event({
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "type": "arena_exit_without_win",
+            **trace,
+        })
+
     async def _trigger_win(self, source: str) -> None:
         """Runs _handle_win at most once per Expedition. Two independent signals can report the
         same win - the buff-pick counter's Nightlord-kill tick and, ~7s later, the outcome pulse -
@@ -1774,6 +1821,10 @@ class NightreignContext(CommonContext):
                 "Win detected as Everdark %s, but this Nightlord has no Everdark form - not "
                 "sending.", boss.name,
             )
+            self._append_event({
+                "timestamp": timestamp, "type": "everdark_win_skipped", "character": character_name,
+                "boss": boss.name, "raw_boss_id": boss.raw, "reason": "no_everdark_form",
+            })
             return
 
         if everdark and boss.name not in self.everdark_nightlords:
@@ -1785,6 +1836,10 @@ class NightreignContext(CommonContext):
                 "Win detected as Everdark %s, but this slot's included_nightlords doesn't "
                 "include \"Everdark %s\" - not sending.", boss.name, boss.name,
             )
+            self._append_event({
+                "timestamp": timestamp, "type": "everdark_win_skipped", "character": character_name,
+                "boss": boss.name, "raw_boss_id": boss.raw, "reason": "not_included",
+            })
             return
 
         is_everdark_win = everdark  # everdark here implies has_everdark_form and is included
@@ -1826,6 +1881,10 @@ class NightreignContext(CommonContext):
                 "Win detected (%s) but that location isn't in this slot's options - not sending.",
                 name,
             )
+            self._append_event({
+                "timestamp": timestamp, "type": "win_location_not_in_slot", "location": name,
+                "raw_boss_id": boss.raw, "everdark": everdark,
+            })
             return
 
         logger.info("Win detected: %s (boss_id=%s)", name, boss.raw)
@@ -1901,6 +1960,9 @@ async def main(args) -> None:
 
 
 def launch(*launch_args: str) -> None:
+    # Writes logs/NightreignClient_<timestamp>.txt - without this the client only logged to the
+    # GUI/console, so a failed run left nothing behind to report.
+    Utils.init_logging("NightreignClient", exception_logger="Client")
     colorama.just_fix_windows_console()
     parser = get_base_parser(description="Archipelago Elden Ring Nightreign Client")
     parser.add_argument("--name", default=None, help="Slot Name to connect as.")

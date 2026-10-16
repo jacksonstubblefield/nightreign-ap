@@ -1,12 +1,12 @@
 # Archipelago - Elden Ring Nightreign
 
 This is an [Archipelago](https://archipelago.gg/) implementation for **Elden Ring Nightreign**, currently in
-**alpha**. See [Overview](worlds/nightreign/docs/en_Nightreign.md) for what the
+**beta**. See [Overview](worlds/nightreign/docs/en_Nightreign.md) for what the
 client does, and [setup](worlds/nightreign/docs/setup_en.md) for setup instructions.  Check out our [roadmap](worlds/nightreign/docs/roadmap.md).
 
 ## Status
 
-This is an alpha, currently getting feedback on the core implementation to make something everyone enjoys.
+This is an beta, currently getting feedback on the core implementation to make something everyone enjoys.
 
 
 ## Running the Client

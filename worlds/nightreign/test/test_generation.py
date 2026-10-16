@@ -79,26 +79,26 @@ class NightreignGateNightAspectTest(WorldTestBase):
 
 class NightreignGateBossAndCharacterTest(WorldTestBase):
     game = "Elden Ring Nightreign"
-    options = {"gate_boss_access": True, "bosses_with_characters": "boss_and_character"}
+    options = {"gate_boss_access": True, "check_style": "boss_per_character"}
 
 
 # --- `gate_character_access` option coverage ---
 # Same shape as the gate_boss_access classes above - one per starting_character, exercising the
 # character access_rule branch in create_regions()'s _make_location. Always paired with
-# bosses_with_characters=boss_and_character: that's the only mode where a location's access_rule
+# check_style=boss_per_character: that's the only mode where a location's access_rule
 # depends on which character is playing at all (see create_regions()'s comment on why "boss" mode
 # has no such dependency), so it's the only mode where a character-gating access_rule mistake could
 # reintroduce the original boss self-loop softlock bug for characters instead of Nightlords.
 
 class NightreignGateCharacterOffTest(WorldTestBase):
     game = "Elden Ring Nightreign"
-    options = {"gate_character_access": False, "bosses_with_characters": "boss_and_character"}
+    options = {"gate_character_access": False, "check_style": "boss_per_character"}
 
 
 class NightreignGateCharacterWylderTest(WorldTestBase):
     game = "Elden Ring Nightreign"
     options = {
-        "gate_character_access": True, "bosses_with_characters": "boss_and_character",
+        "gate_character_access": True, "check_style": "boss_per_character",
         "starting_character": "wylder",
     }
 
@@ -106,7 +106,7 @@ class NightreignGateCharacterWylderTest(WorldTestBase):
 class NightreignGateCharacterGuardianTest(WorldTestBase):
     game = "Elden Ring Nightreign"
     options = {
-        "gate_character_access": True, "bosses_with_characters": "boss_and_character",
+        "gate_character_access": True, "check_style": "boss_per_character",
         "starting_character": "guardian",
     }
 
@@ -114,7 +114,7 @@ class NightreignGateCharacterGuardianTest(WorldTestBase):
 class NightreignGateCharacterIroneyeTest(WorldTestBase):
     game = "Elden Ring Nightreign"
     options = {
-        "gate_character_access": True, "bosses_with_characters": "boss_and_character",
+        "gate_character_access": True, "check_style": "boss_per_character",
         "starting_character": "ironeye",
     }
 
@@ -122,7 +122,7 @@ class NightreignGateCharacterIroneyeTest(WorldTestBase):
 class NightreignGateCharacterDuchessTest(WorldTestBase):
     game = "Elden Ring Nightreign"
     options = {
-        "gate_character_access": True, "bosses_with_characters": "boss_and_character",
+        "gate_character_access": True, "check_style": "boss_per_character",
         "starting_character": "duchess",
     }
 
@@ -130,7 +130,7 @@ class NightreignGateCharacterDuchessTest(WorldTestBase):
 class NightreignGateCharacterRaiderTest(WorldTestBase):
     game = "Elden Ring Nightreign"
     options = {
-        "gate_character_access": True, "bosses_with_characters": "boss_and_character",
+        "gate_character_access": True, "check_style": "boss_per_character",
         "starting_character": "raider",
     }
 
@@ -138,7 +138,7 @@ class NightreignGateCharacterRaiderTest(WorldTestBase):
 class NightreignGateCharacterRevenantTest(WorldTestBase):
     game = "Elden Ring Nightreign"
     options = {
-        "gate_character_access": True, "bosses_with_characters": "boss_and_character",
+        "gate_character_access": True, "check_style": "boss_per_character",
         "starting_character": "revenant",
     }
 
@@ -146,7 +146,7 @@ class NightreignGateCharacterRevenantTest(WorldTestBase):
 class NightreignGateCharacterRecluseTest(WorldTestBase):
     game = "Elden Ring Nightreign"
     options = {
-        "gate_character_access": True, "bosses_with_characters": "boss_and_character",
+        "gate_character_access": True, "check_style": "boss_per_character",
         "starting_character": "recluse",
     }
 
@@ -154,7 +154,7 @@ class NightreignGateCharacterRecluseTest(WorldTestBase):
 class NightreignGateCharacterExecutorTest(WorldTestBase):
     game = "Elden Ring Nightreign"
     options = {
-        "gate_character_access": True, "bosses_with_characters": "boss_and_character",
+        "gate_character_access": True, "check_style": "boss_per_character",
         "starting_character": "executor",
     }
 
@@ -162,7 +162,7 @@ class NightreignGateCharacterExecutorTest(WorldTestBase):
 class NightreignGateCharacterScholarTest(WorldTestBase):
     game = "Elden Ring Nightreign"
     options = {
-        "gate_character_access": True, "bosses_with_characters": "boss_and_character",
+        "gate_character_access": True, "check_style": "boss_per_character",
         "starting_character": "scholar",
     }
 
@@ -170,7 +170,7 @@ class NightreignGateCharacterScholarTest(WorldTestBase):
 class NightreignGateCharacterUndertakerTest(WorldTestBase):
     game = "Elden Ring Nightreign"
     options = {
-        "gate_character_access": True, "bosses_with_characters": "boss_and_character",
+        "gate_character_access": True, "check_style": "boss_per_character",
         "starting_character": "undertaker",
     }
 
@@ -180,7 +180,7 @@ class NightreignGateBossAndCharacterAccessTogetherTest(WorldTestBase):
     options = {
         "gate_boss_access": True,
         "gate_character_access": True,
-        "bosses_with_characters": "boss_and_character",
+        "check_style": "boss_per_character",
         "starting_boss": "fissure_in_the_fog",  # the exact starting_boss the original softlock used
         "starting_character": "revenant",
     }
@@ -196,7 +196,7 @@ class NightreignGateCharacterNotEnoughRoomTest(WorldTestBase):
     options = {
         "gate_boss_access": False,
         "gate_character_access": True,
-        "bosses_with_characters": "boss",  # locations aren't per-character in this mode
+        "check_style": "boss",  # locations aren't per-character in this mode
         "included_characters": CHARACTERS,  # all 10, minus 1 starting = 9 Character Access items
         "included_nightlords": ["Tricephalos"],  # only 1 location exists to hold them
     }
@@ -238,10 +238,10 @@ class NightreignEverdarkBossAndCharacterTest(WorldTestBase):
     game = "Elden Ring Nightreign"
     options = {
         "included_nightlords": ALL_NIGHTLORDS_WITH_EVERDARK,
-        "bosses_with_characters": "boss_and_character",
+        "check_style": "boss_per_character",
     }
 
-    def test_everdark_locations_mirror_bosses_with_characters(self) -> None:
+    def test_everdark_locations_mirror_check_style(self) -> None:
         # Exact-name match, not a prefix: nightlord_bonus_checks is universal now, so
         # "Defeat Everdark X as Y (Bonus N)" locations also start with "Defeat Everdark " and would
         # inflate a prefix-based count 5x.
@@ -260,7 +260,7 @@ class NightreignEverdarkWithGateTest(WorldTestBase):
     options = {
         "included_nightlords": ALL_NIGHTLORDS_WITH_EVERDARK,
         "gate_boss_access": True,
-        "bosses_with_characters": "boss_and_character",
+        "check_style": "boss_per_character",
         "starting_boss": "fissure_in_the_fog",  # the exact starting_boss the original softlock used
     }
     # No dedicated test method needed - WorldTestBase's default test_fill (run via auto_construct)
@@ -272,8 +272,8 @@ class NightreignEverdarkNotInGoalGroupsTest(WorldTestBase):
     game = "Elden Ring Nightreign"
     options = {
         "included_nightlords": ALL_NIGHTLORDS_WITH_EVERDARK,
-        "bosses_with_characters": "boss_and_character",
-        "goal": "all_bosses",
+        "check_style": "boss_per_character",
+        "goal": "all_bosses_all_characters",
     }
 
     def test_goal_groups_ignores_everdark_locations(self) -> None:
@@ -366,9 +366,9 @@ class NightreignSingleCurrencyFillerTest(WorldTestBase):
 class NightreignGoalRandomWrongGranularityTest(WorldTestBase):
     game = "Elden Ring Nightreign"
     auto_construct = False
-    options = {"goal": "random_subset", "bosses_with_characters": "boss"}
+    options = {"goal": "random_subset", "check_style": "boss"}
 
-    def test_random_goal_requires_boss_and_character(self) -> None:
+    def test_random_goal_requires_boss_per_character(self) -> None:
         with self.assertRaises(OptionError):
             self.world_setup()
 
@@ -388,7 +388,7 @@ class NightreignGoalRandomMinTooHighTest(WorldTestBase):
     auto_construct = False
     options = {
         "goal": "random_subset",
-        "bosses_with_characters": "boss_and_character",
+        "check_style": "boss_per_character",
         "included_characters": ["Wylder"],
         "included_nightlords": ["Tricephalos"],
         "goal_random_min": 2,  # only 1 combo (Wylder x Tricephalos) is available
@@ -401,7 +401,7 @@ class NightreignGoalRandomMinTooHighTest(WorldTestBase):
 
 class NightreignGoalNightAspectTest(WorldTestBase):
     game = "Elden Ring Nightreign"
-    options = {"goal": "night_aspect", "bosses_with_characters": "boss_and_character"}
+    options = {"goal": "night_aspect", "check_style": "boss_per_character"}
 
     def test_goal_groups_is_one_group_of_every_characters_night_aspect_win(self) -> None:
         self.assertEqual(len(self.world.goal_groups), 1)
@@ -411,8 +411,8 @@ class NightreignGoalNightAspectTest(WorldTestBase):
 class NightreignGoalAllBossesAnyCharacterTest(WorldTestBase):
     game = "Elden Ring Nightreign"
     options = {
-        "goal": "all_bosses_any_character",
-        "bosses_with_characters": "boss_and_character",
+        "goal": "all_bosses",
+        "check_style": "boss_per_character",
         "included_characters": ["Wylder", "Guardian"],
     }
 
@@ -431,7 +431,7 @@ class NightreignGoalRandomTest(WorldTestBase):
     game = "Elden Ring Nightreign"
     options = {
         "goal": "random_subset",
-        "bosses_with_characters": "boss_and_character",
+        "check_style": "boss_per_character",
         "goal_random_min": 3,
         "goal_random_max": 5,
     }
@@ -571,7 +571,7 @@ class NightreignRandomStartingBossTest(WorldTestBase):
         for seed in range(50):
             with self.subTest(seed=seed):
                 self.options = {"starting_boss": "random", "included_nightlords": included,
-                                "goal": "all_bosses"}
+                                "goal": "all_bosses_all_characters"}
                 self.world_setup(seed)
                 name = (f"Everdark {self.world.starting_boss}" if self.world.starting_boss_everdark
                         else self.world.starting_boss)
@@ -595,7 +595,7 @@ class NightreignRandomStartingBossTest(WorldTestBase):
 
 class NightreignBonusChecksAlwaysAddedTest(WorldTestBase):
     game = "Elden Ring Nightreign"
-    options = {"included_nightlords": frozenset({"Tricephalos"}), "goal": "all_bosses"}
+    options = {"included_nightlords": frozenset({"Tricephalos"}), "goal": "all_bosses_all_characters"}
 
     def test_adds_4_bonus_locations(self) -> None:
         locations = self.multiworld.get_locations(self.world.player)
@@ -625,7 +625,7 @@ class NightreignBonusChecksShareAccessRuleTest(WorldTestBase):
     options = {
         "gate_boss_access": True, "starting_boss": "tricephalos",
         "included_nightlords": frozenset({"Tricephalos", "Gaping Jaw"}),
-        "goal": "all_bosses",
+        "goal": "all_bosses_all_characters",
     }
 
     def test_locked_until_access_item_collected(self) -> None:
@@ -644,7 +644,7 @@ class NightreignBonusChecksShareAccessRuleTest(WorldTestBase):
 
 class NightreignNightClearChecksAlwaysAddedTest(WorldTestBase):
     game = "Elden Ring Nightreign"
-    options = {"included_nightlords": frozenset({"Tricephalos"}), "goal": "all_bosses"}
+    options = {"included_nightlords": frozenset({"Tricephalos"}), "goal": "all_bosses_all_characters"}
 
     def test_adds_exactly_one_night1_and_night2_location(self) -> None:
         locations = self.multiworld.get_locations(self.world.player)
@@ -674,7 +674,7 @@ class NightreignNightClearChecksShareAccessRuleTest(WorldTestBase):
     options = {
         "gate_boss_access": True, "starting_boss": "tricephalos",
         "included_nightlords": frozenset({"Tricephalos", "Gaping Jaw"}),
-        "goal": "all_bosses",
+        "goal": "all_bosses_all_characters",
     }
 
     def test_locked_until_access_item_collected(self) -> None:
@@ -701,7 +701,7 @@ class NightreignWeakRewardChecksAlwaysOffTest(WorldTestBase):
     game = "Elden Ring Nightreign"
     options = {
         "weak_reward_checks": True, "strong_reward_checks": True,  # ignored - see comment above
-        "included_nightlords": frozenset({"Tricephalos"}), "goal": "all_bosses",
+        "included_nightlords": frozenset({"Tricephalos"}), "goal": "all_bosses_all_characters",
     }
 
     def test_no_weak_or_strong_reward_locations_added(self) -> None:
@@ -714,7 +714,7 @@ class NightreignWeakRewardChecksAlwaysOffTest(WorldTestBase):
 #     game = "Elden Ring Nightreign"
 #     options = {
 #         "weak_reward_checks": True, "included_nightlords": frozenset({"Tricephalos"}),
-#         "goal": "all_bosses",
+#         "goal": "all_bosses_all_characters",
 #     }
 #
 #     def test_adds_one_location_per_threshold(self) -> None:
@@ -741,7 +741,7 @@ class NightreignWeakRewardChecksAlwaysOffTest(WorldTestBase):
 #     game = "Elden Ring Nightreign"
 #     options = {
 #         "strong_reward_checks": True, "included_nightlords": frozenset({"Tricephalos"}),
-#         "goal": "all_bosses",
+#         "goal": "all_bosses_all_characters",
 #     }
 #
 #     def test_adds_one_location_per_threshold(self) -> None:
@@ -755,13 +755,13 @@ class NightreignWeakRewardChecksAlwaysOffTest(WorldTestBase):
 
 class NightreignAllExtraCheckFamiliesTogetherTest(WorldTestBase):
     game = "Elden Ring Nightreign"
-    # boss_and_character plus an Everdark entry, to exercise create_regions()'s full cross product
+    # boss_per_character plus an Everdark entry, to exercise create_regions()'s full cross product
     # (the shape most likely to break silently) for the always-on bonus/Night 1/Night 2 families.
     # weak_reward_checks/strong_reward_checks dropped from here - no "on" state exists right now.
     options = {
-        "bosses_with_characters": "boss_and_character",
+        "check_style": "boss_per_character",
         "included_nightlords": frozenset({"Tricephalos", "Everdark Tricephalos"}),
-        "included_characters": frozenset({"Wylder"}), "goal": "all_bosses",
+        "included_characters": frozenset({"Wylder"}), "goal": "all_bosses_all_characters",
     }
 
     def test_everdark_bonus_location_generated(self) -> None:
@@ -772,7 +772,7 @@ class NightreignAllExtraCheckFamiliesTogetherTest(WorldTestBase):
         )
 
     def test_no_extra_check_family_location_in_goal_groups(self) -> None:
-        # In boss_and_character mode, the only location goal_groups (goal=all_bosses default)
+        # In boss_per_character mode, the only location goal_groups (goal=all_bosses_all_characters)
         # should ever contain is the base per-character "Defeat Tricephalos as Wylder" - everything
         # else this slot generated (bonus checks, Night 1/2, weak/strong, Everdark) must be
         # disjoint. Exact-name exclusion, not a prefix match: a prefix match on "Defeat Tricephalos

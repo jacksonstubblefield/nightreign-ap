@@ -48,8 +48,8 @@ class NightreignWeb(WebWorld):
 class NightreignWorld(World):
     """
     Elden Ring Nightreign is a co-op roguelike action game from FromSoftware.
-    Location checks are "defeat Nightlord X" (or, with bosses_with_characters set
-    to boss_and_character, "defeat Nightlord X as character Y"), detected via
+    Location checks are "defeat Nightlord X" (or, with check_style set
+    to boss_per_character, "defeat Nightlord X as character Y"), detected via
     read-only game memory polling. With the gate_boss_access option enabled,
     every Nightlord other than the chosen starting_boss is gated behind
     receiving that Nightlord's Access item - written into the running game
@@ -58,7 +58,7 @@ class NightreignWorld(World):
     are flavorful and have no in-game effect. The gate_character_access option works the same way
     for playable characters instead of Nightlords - every character other than the chosen
     starting_character is gated behind receiving that character's Character Access item, and with
-    bosses_with_characters set to boss_and_character, a win as a not-yet-unlocked character also
+    check_style set to boss_per_character, a win as a not-yet-unlocked character also
     doesn't send its check. Each Everdark Sovereign is its own separate entry in
     included_nightlords (e.g. "Everdark Tricephalos", included by default) - defeating one is a
     separate, optional location, never required for the goal, since Everdark availability depends
@@ -82,7 +82,7 @@ class NightreignWorld(World):
     client.py but its Options.py toggles are currently commented out - live-confirmed to also fire
     on any weapon pickup at all, including this world's own randomized weapon drops, so there's no
     way to enable it right now (see Options.py for the known-issue writeup, still there next to the
-    commented-out classes). The two universal families mirror bosses_with_characters and cover
+    commented-out classes). The two universal families mirror check_style and cover
     Everdark Sovereigns the same way the base locations do.
     """
 
@@ -178,12 +178,12 @@ class NightreignWorld(World):
         included_nightlords = [
             nl for nl in self.options.included_nightlords.value if nl in NIGHTLORDS
         ]
-        per_character = self.options.bosses_with_characters == "boss_and_character"
+        per_character = self.options.check_style == "boss_per_character"
 
         if self.options.goal == "random_subset" and not per_character:
             raise OptionError(
-                f"{self.player_name}: goal 'random_subset' requires bosses_with_characters to "
-                "be 'boss_and_character'."
+                f"{self.player_name}: goal 'random_subset' requires check_style to "
+                "be 'boss_per_character'."
             )
         if self.options.goal == "night_aspect" and "Night Aspect" not in included_nightlords:
             raise OptionError(
@@ -232,10 +232,10 @@ class NightreignWorld(World):
 
         # Iterate CHARACTERS/NIGHTLORDS (fixed order) rather than the option sets directly, so
         # location creation order stays deterministic. Each location is paired with the Nightlord
-        # it defeats (and, in boss_and_character mode, the character - None in "boss" mode, since
+        # it defeats (and, in boss_per_character mode, the character - None in "boss" mode, since
         # locations aren't tied to a specific character there) so the access rule below can gate
         # it without re-parsing the location name.
-        if self.options.bosses_with_characters == "boss_and_character":
+        if self.options.check_style == "boss_per_character":
             included_characters = self.options.included_characters.value
             locations = [
                 (location_name(character, nightlord), nightlord, character)
@@ -251,7 +251,7 @@ class NightreignWorld(World):
                 if nightlord in included_nightlords
             ]
 
-        # Everdark locations mirror bosses_with_characters exactly like the normal locations
+        # Everdark locations mirror check_style exactly like the normal locations
         # above, but over whichever EVERDARK_NIGHTLORDS entries have their own "Everdark X" entry
         # in included_nightlords (see game_data.EVERDARK_NIGHTLORD_ENTRIES/Options.py's
         # IncludedNightlords) - each Everdark Sovereign is included independently of its base
@@ -264,7 +264,7 @@ class NightreignWorld(World):
             if f"Everdark {nightlord}" in included_nightlords
         ]
         everdark_locations = []
-        if self.options.bosses_with_characters == "boss_and_character":
+        if self.options.check_style == "boss_per_character":
             included_characters = self.options.included_characters.value
             everdark_locations = [
                 (location_name_everdark(character, nightlord), nightlord, character)
@@ -353,7 +353,7 @@ class NightreignWorld(World):
                 ids_by_name[name] for name, nightlord, _character in locations
                 if nightlord == "Night Aspect"
             ]]
-        elif goal == "all_bosses_any_character":
+        elif goal == "all_bosses":
             self.goal_groups = [
                 [ids_by_name[name] for name, nl, _character in locations if nl == nightlord]
                 for nightlord in NIGHTLORDS
@@ -377,7 +377,7 @@ class NightreignWorld(World):
             # Everdark Sovereigns are treated as entirely separate bosses from their base Nightlord
             # - own checks, own "Everdark X Access" item, own freed_everdark_nightlords set, keyed
             # off the same nightlord name but never sharing the base Nightlord's Access item or
-            # freed_nightlords entry. character is only set in boss_and_character mode - in "boss"
+            # freed_nightlords entry. character is only set in boss_per_character mode - in "boss"
             # mode no location is tied to a specific character, so gate_character_access there only
             # controls in-game unlocking, never location reachability. Combined via a small
             # AND-rule when both the Nightlord and the character are gated, the same way AP's
@@ -485,8 +485,8 @@ class NightreignWorld(World):
                 f"({len(access_names)} boss + {len(character_access_names)} character + "
                 f"{len(everdark_access_names)} Everdark) but only "
                 f"{len(self.active_locations)} locations exist with these settings. "
-                "bosses_with_characters=boss only makes one location per Nightlord, not per "
-                "character - switch to boss_and_character, reduce included_characters/"
+                "check_style=boss only makes one location per Nightlord, not per "
+                "character - switch to boss_per_character, reduce included_characters/"
                 "included_nightlords, or disable gate_boss_access/gate_character_access."
             )
 
@@ -569,7 +569,7 @@ class NightreignWorld(World):
             "starting_boss": self.starting_boss,
             "starting_boss_everdark": self.starting_boss_everdark,
             "starting_character": self.starting_character,
-            "bosses_with_characters": self.options.bosses_with_characters.current_key,
+            "check_style": self.options.check_style.current_key,
             "goal": self.options.goal.current_key,
             "goal_groups": self.goal_groups,
             "death_link": self.options.death_link.current_key,

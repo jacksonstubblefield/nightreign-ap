@@ -93,7 +93,7 @@ def location_name_kill_bonus(
     NIGHTLORD_BONUS_INDICES) that fire together, alongside the existing "Defeat X" location, on a
     Nightlord's first valid defeat - NOT a cumulative kill counter (index has nothing to do with
     how many times the boss has been killed; it just distinguishes these 4 locations from each
-    other and from the pre-existing "Defeat X"/index-1 location). Mirrors bosses_with_characters'
+    other and from the pre-existing "Defeat X"/index-1 location). Mirrors check_style'
     per-character/boss-only shape and covers Everdark Sovereigns the same way location_name_everdark
     does.
 

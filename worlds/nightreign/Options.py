@@ -22,13 +22,7 @@ class IncludedCharacters(OptionSet):
 
 
 class IncludedNightlords(OptionSet):
-    """Which Nightlords to generate location checks for. Each Everdark Sovereign is its own
-    separate entry (e.g. "Everdark Tricephalos") - Everdark Sovereigns are entirely separate
-    bosses from their base Nightlord (own check, own Access item), so add one explicitly to
-    include its check; it is NOT implied by including the base Nightlord. All included by default.
-    Everdark checks are never required for the goal, since reaching a specific Everdark Sovereign
-    depends on an external weekly rotation this world can't unlock or guarantee - the actual
-    availability is on you, the player. Remove the "Everdark X" entries to leave them out.
+    """Which Nightlords to generate location checks for. All included by default, including Everdark.
     """
 
     display_name = "Included Nightlords"
@@ -36,14 +30,14 @@ class IncludedNightlords(OptionSet):
     default = frozenset(ALL_NIGHTLORD_ENTRIES)
 
 
-class BossesWithCharacters(Choice):
+class CheckStyle(Choice):
     """Enable this if you want to generate checks for defeating each boss with each character, 
     rather than just one check per boss.
     """
 
-    display_name = "Bosses With Characters"
+    display_name = "Check Style"
     option_boss = 0
-    option_boss_and_character = 1
+    option_boss_per_character = 1
     default = 0
 
 
@@ -133,6 +127,8 @@ class GateCharacterAccess(Toggle):
 
 class StartingCharacter(Choice):
     """If character access is gated, this is the character you start with.
+
+    DLC characters are a bit finnicky, so read setup_en.md before choosing random or DLC characters.
     """
 
     display_name = "Starting Character"
@@ -183,7 +179,8 @@ class WeaponPool(Choice):
 
 class PreferredWeaponChance(Range):
     """With Weapon Pool set to Character Preferred, the percent chance a received weapon is one
-    of your character's preferred types. The rest are any weapon. 100 means preferred types only.
+    of your character's preferred types. The rest are any weapon. 100 means preferred types only and
+    some weapons can never be dropped (nobody prefers torches).
     """
 
     display_name = "Preferred Weapon Chance"
@@ -250,11 +247,11 @@ class TrapPercentage(Range):
 class EnabledTraps(OptionSet):
     """Which traps Trap Percentage can place.
 
-    "Scarlet Rot Trap": inflicts Scarlet Rot.
-    "Poison Trap": inflicts Poison.
-    "Sleep Trap": puts you to sleep.
-    "Frostbite Trap": inflicts Frostbite.
-    "Madness Trap": inflicts Madness.
+    "Scarlet Rot Trap": inflicts Scarlet Rot
+    "Poison Trap": inflicts Poison
+    "Sleep Trap": inflicts Sleep
+    "Frostbite Trap": inflicts Frostbite
+    "Madness Trap": inflicts Madness
     """
 
     display_name = "Enabled Traps"
@@ -284,32 +281,6 @@ class WinCountUpTo(Range):
     default = 25
 
 
-# class WeakRewardChecks(Toggle):
-#     """If enabled, adds up to 5 cumulative checks per Nightlord (or per Nightlord x character) for
-#     collecting weak rewards.
-
-#     KNOWN ISSUE (off by default until this is resolved): the underlying memory counter fires on
-#     any weapon pickup, not just genuine reward-tier POI clears - including this world's own
-#     randomized weapon drops. Turning this on currently means "weak reward" checks award for
-#     picking up any weapon at all, not the POI-reward-tier event this option is meant to track.
-#     """
-
-#     display_name = "Weak Reward Checks"
-#     default = 0
-
-
-# class StrongRewardChecks(Toggle):
-#     """If enabled, adds up to 5 cumulative checks per Nightlord (or per Nightlord x character) for
-#     collecting strong rewards.
-
-#     KNOWN ISSUE (off by default until this is resolved): same false-positive problem as
-#     WeakRewardChecks - the underlying counter fires on any weapon pickup, not just genuine
-#     reward-tier POI clears.
-#     """
-
-#     display_name = "Strong Reward Checks"
-#     default = 0
-
 
 class DeathLinkMode(Choice):
     """
@@ -336,17 +307,17 @@ class Goal(Choice):
 
     "Night Aspect" (default): defeat Night Aspect - the vanilla game's own ending/credits boss.
 
-    "All Bosses": defeat every boss with every included character. A titanic goal.
+    "All Bosses All Characters": defeat every boss with every included character. A titanic goal.
 
-    "All Bosses Any Character": defeat every included Nightlord at least once.
+    "All Bosses": defeat every included Nightlord at least once, with any character.
 
     "Random": creates a random subset of defeating nightlords as random characters. 
     """
 
     display_name = "Goal"
     option_night_aspect = 0
-    option_all_bosses = 1
-    option_all_bosses_any_character = 2
+    option_all_bosses_all_characters = 1
+    option_all_bosses = 2
     option_random_subset = 3
     default = 0
 
@@ -377,7 +348,7 @@ option_groups = [
         StartingBoss,
         GateBossAccess,
         UnlockAllBossesInGame,
-        BossesWithCharacters,
+        CheckStyle,
     ]),
     OptionGroup("Characters", [
         IncludedCharacters,
@@ -419,7 +390,7 @@ option_groups = [
 class NightreignOptions(PerGameCommonOptions):
     included_characters: IncludedCharacters
     included_nightlords: IncludedNightlords
-    bosses_with_characters: BossesWithCharacters
+    check_style: CheckStyle
     starting_boss: StartingBoss
     gate_boss_access: GateBossAccess
     unlock_all_bosses_in_game: UnlockAllBossesInGame

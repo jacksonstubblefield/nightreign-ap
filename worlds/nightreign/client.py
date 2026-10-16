@@ -156,8 +156,8 @@ HUB_CURRENCIES = ("Murk", "Sovereign Sigil")
 # slot_data "goal" key (Options.py's Goal) -> Unlocks tab header text
 GOAL_DISPLAY_NAMES = {
     "night_aspect": "Night Aspect",
+    "all_bosses_all_characters": "All Bosses All Characters",
     "all_bosses": "All Bosses",
-    "all_bosses_any_character": "All Bosses Any Character",
     "random_subset": "Random",
 }
 
@@ -334,7 +334,7 @@ class NightreignContext(CommonContext):
         self._last_in_hub = None
         self._win_handled_this_run = False
         self._arena_trace = None
-        self.goal = "all_bosses"
+        self.goal = "all_bosses_all_characters"
         self.goal_groups = []
         self.writer = None
         self.overlay = None
@@ -579,7 +579,7 @@ class NightreignContext(CommonContext):
                 starting_free_characters(self.slot_data.get("starting_character", "Wylder"))
             )
             self.per_character_checks = (
-                self.slot_data.get("bosses_with_characters", "boss") == "boss_and_character"
+                self.slot_data.get("check_style", "boss") == "boss_per_character"
             )
             self.win_count_checks = bool(self.slot_data.get("win_count_checks", False))
             # Already capped at this slot's win_count_up_to by __init__.py's generate_early() - a
@@ -591,7 +591,7 @@ class NightreignContext(CommonContext):
             self.strong_reward_thresholds = list(
                 self.slot_data.get("strong_reward_thresholds") or []
             )
-            self.goal = self.slot_data.get("goal", "all_bosses")
+            self.goal = self.slot_data.get("goal", "all_bosses_all_characters")
             self.goal_groups = self.slot_data.get("goal_groups") or []
             self.slot_death_link_mode = self.slot_data.get("death_link", "off")
             # A /deathlink typed this session wins over the slot's setting across reconnects.

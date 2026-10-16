@@ -234,7 +234,7 @@ def win_count_threshold_list(up_to: int) -> list:
 
 
 # --- Nightlord bonus checks ---
-# A flat 5 checks per Nightlord (or per Nightlord x character, mirroring bosses_with_characters),
+# A flat 5 checks per Nightlord (or per Nightlord x character, mirroring check_style),
 # all sent together on the FIRST valid defeat - NOT a cumulative kill counter (repeat kills of the
 # same Nightlord/character/Everdark combo award nothing further here, same as the existing
 # "Defeat X" location already doesn't re-fire). Index 1 is just that existing "Defeat X" location,
@@ -253,7 +253,7 @@ NIGHTLORD_BONUS_INDICES = (2, 3, 4, 5)
 # boss kill (the 3->4 transition, ~20-60s after the kill) - NOT on merely reaching the Night 2
 # arena (2->3). DAY_PHASE_DAY_3 live-confirmed 2026-10-04 across a Night Aspect and an Augur run:
 # 3->4 right after the Night 2 boss died, held at 4 through the whole Nightlord fight.
-# Each Nightlord (or Nightlord x character, mirroring bosses_with_characters) gets exactly ONE
+# Each Nightlord (or Nightlord x character, mirroring check_style) gets exactly ONE
 # Night 1 Clear location and ONE Night 2 Clear location - not a cumulative counter, and not
 # optional, same "universal baseline" posture as the bonus checks above.
 DAY_PHASE_DAY_1 = 0
@@ -285,7 +285,7 @@ def is_nightlord_kill_tick(
 
 # --- Reward-tier checks (weak/strong) ---
 # Fixed 1-5 cumulative counter per Nightlord (or per Nightlord x character, mirroring
-# bosses_with_characters) for the game's own "Weak"/"Strong" reward-tier POI pickups (see
+# check_style) for the game's own "Weak"/"Strong" reward-tier POI pickups (see
 # memory_reader.py's WEAPON_PICKUP_COUNTER_OFFSET/BUFF_PICK_COUNTER_OFFSET) collected during an
 # Expedition against that Nightlord. Unlike the two families above, these stay opt-in
 # (Options.py's WeakRewardChecks/StrongRewardChecks) since several can be earned in a single

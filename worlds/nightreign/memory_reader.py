@@ -629,7 +629,7 @@ class NightreignMemoryReader:
         50400->50420, both with the "Darkness" garb equipped). Base class ids are clean hundreds
         (50000, 50100, ...), so flooring to the nearest hundred before the lookup recovers the
         class regardless of which garb is equipped. Without this, any player using a non-default
-        garb in `bosses_with_characters=boss_and_character` mode had every win silently dropped -
+        garb in `check_style=boss_per_character` mode had every win silently dropped -
         see client.py's _handle_win(), which skips sending the check entirely when this returns
         None."""
         class_id = self.read_character_class()

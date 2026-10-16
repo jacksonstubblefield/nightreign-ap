@@ -31,8 +31,8 @@ class IncludedNightlords(OptionSet):
 
 
 class CheckStyle(Choice):
-    """Enable this if you want to generate checks for defeating each boss with each character, 
-    rather than just one check per boss.
+    """Boss: each boss has a single check for defeating it, regardless of character.
+    Boss per Character: each boss has a check for defeating it with each included character.
     """
 
     display_name = "Check Style"

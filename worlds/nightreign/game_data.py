@@ -443,3 +443,35 @@ def bundles_for_amount(currency: str, amount: int) -> list:
         count, amount = divmod(amount, size)
         result += [name] * count
     return result
+
+
+# --- Status-effect traps (see client.py's _deliver_pending_traps) ---
+# The game's own "apply SpEffect to a character" function, called as fn(PlayerIns, sp_effect_id, 1)
+# - Python port of the ARM CE table v1.03.2's "Call SpEffect" script (Volkov_ilya37), which
+# resolves fn as this AOB's match minus SPEFFECT_CALL_BACKOFF. PlayerIns is [WorldChrMan]+0x174E8,
+# the same object PLAYER_HP_OFFSETS/WORLDCHRMAN_ANIM_OFFSETS start from.
+SPEFFECT_CALL_AOB = (
+    "C6 44 24 58 01 44 0F B6 CB C6 44 24 50 00 4C 8B C6 C6 44 24 48 00 8B D7 C6 44 24 40 00 "
+    "48 8B CE C6 44 24 38 00 C6 44 24 30 00 48 89 44 24 28 48 8D 84 24"
+)
+SPEFFECT_CALL_BACKOFF = 0x68
+PLAYER_INS_OFFSET = 0x174E8
+
+# Trap item name -> (SpEffect id, applications). The ids are the strongest weapon-buildup tiers
+# ("Scarlet Rot Type 1|6 75 Strongest", "Poison Type 1|6 90 Strongest"): applied to the player they
+# add that much buildup to their own bar - live-tested 2026-10-16, one 6605 filled about half a
+# Raider's rot bar, stacking procs it, 6505 does the same for poison. Each trap stacks
+# TRAP_APPLICATIONS of them (600 rot / 720 poison) so even a heavily resistance-boosted character
+# procs; applications past the proc are harmless. TRAP_APPLY_INTERVAL is the live-tested spacing -
+# applying the same id twice without a gap hasn't been tested. Sleep/Frost/Madness use the same
+# spreadsheet's strongest tiers ("Sleep Type 1|7 96", "Frost Type 1|6 80", "Madness Type 1|6 80") but
+# haven't been live-tested yet. New traps are appended - Items.py derives item ids from this order.
+TRAP_APPLICATIONS = 8
+TRAP_APPLY_INTERVAL = 0.5
+STATUS_TRAPS = {
+    "Scarlet Rot Trap": (6605, TRAP_APPLICATIONS),
+    "Poison Trap": (6505, TRAP_APPLICATIONS),
+    "Sleep Trap": (6456, TRAP_APPLICATIONS),
+    "Frostbite Trap": (6705, TRAP_APPLICATIONS),
+    "Madness Trap": (6755, TRAP_APPLICATIONS),
+}

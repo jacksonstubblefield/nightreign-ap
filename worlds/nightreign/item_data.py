@@ -546,6 +546,49 @@ WEAPON_TABLE = {
     0x29F8A10: "Jar Cannon",
 }
 
+# Weapon class, keyed by item_id // 1_000_000 - Elden Ring's weapon ids encode their class in the
+# millions place, and every WEAPON_TABLE id falls cleanly into one of these.
+WEAPON_CLASS_NAMES = {
+    1: "Dagger", 2: "Straight Sword", 3: "Greatsword", 4: "Colossal Sword",
+    5: "Thrusting Sword", 6: "Heavy Thrusting Sword", 7: "Curved Sword",
+    8: "Curved Greatsword", 9: "Katana", 10: "Twinblade", 11: "Hammer", 12: "Great Hammer",
+    13: "Flail", 14: "Axe", 15: "Greataxe", 16: "Spear", 17: "Great Spear", 18: "Halberd",
+    19: "Reaper", 20: "Whip", 21: "Fist", 22: "Claw", 23: "Colossal Weapon", 24: "Torch",
+    30: "Small Shield", 31: "Medium Shield", 32: "Greatshield", 33: "Staff", 34: "Sacred Seal",
+    40: "Light Bow", 41: "Bow", 42: "Greatbow", 43: "Crossbow", 44: "Ballista",
+}
+
+
+def weapon_class(item_id: int) -> int:
+    return item_id // 1_000_000
+
+
+# Character name (game_data.CHARACTERS) -> the WEAPON_CLASS_NAMES ids a "character_preferred"
+# weapon_pool rolls from (see Options.py's WeaponPool / client.py's _roll_weapon_drop). DRAFT:
+# built from each Nightfarer's starting weapon and stat scaling, not yet checked against play -
+# Scholar/Undertaker especially.
+CHARACTER_PREFERRED_WEAPON_CLASSES = {
+    "Wylder": {2, 3, 4, 14, 15, 16, 18},
+    "Guardian": {16, 17, 18, 11, 32},
+    "Ironeye": {1, 5, 40, 41, 42, 43, 44},
+    "Duchess": {1, 5, 7, 33},
+    "Raider": {4, 12, 15, 21, 23},
+    "Revenant": {21, 22, 34},
+    "Recluse": {33, 34},
+    "Executor": {1, 7, 9, 10},
+    "Scholar": {1, 2, 5, 33},
+    "Undertaker": {11, 12, 13, 34},
+}
+
+
+def weapon_pool_for_character(character: str | None) -> list[int]:
+    """WEAPON_TABLE ids in character's preferred classes, in table order (so a seeded rng.choice
+    over it is reproducible). Falls back to the full table for an unknown/None character."""
+    classes = CHARACTER_PREFERRED_WEAPON_CLASSES.get(character)
+    if not classes:
+        return list(WEAPON_TABLE)
+    return [item_id for item_id in WEAPON_TABLE if weapon_class(item_id) in classes]
+
 # Ash of War id -> display name, same source/extraction as WEAPON_TABLE. Covers every generic,
 # weapon-swappable Ash of War, not unique arts bound to specific legendary weapons (e.g.
 # Moonveil's) - those apply automatically with the weapon and were never independently selectable.

@@ -38,9 +38,12 @@ try:
         MURK_GRANT_AOB,
         PLAYER_HP_FINAL_OFFSET,
         PLAYER_HP_OFFSETS,
+        PLAYER_INS_OFFSET,
         PLAYER_MAX_HP_FINAL_OFFSET,
         RUNES_GRANT_AOB,
         SOVEREIGN_SIGIL_GRANT_AOB,
+        SPEFFECT_CALL_AOB,
+        SPEFFECT_CALL_BACKOFF,
         TLS_FAKE_CONTEXT_RVA,
         TLS_SLOT_FETCHER_ITEMDROP_AOB,
         UNSET_SENTINEL,
@@ -69,9 +72,12 @@ except ImportError:
         MURK_GRANT_AOB,
         PLAYER_HP_FINAL_OFFSET,
         PLAYER_HP_OFFSETS,
+        PLAYER_INS_OFFSET,
         PLAYER_MAX_HP_FINAL_OFFSET,
         RUNES_GRANT_AOB,
         SOVEREIGN_SIGIL_GRANT_AOB,
+        SPEFFECT_CALL_AOB,
+        SPEFFECT_CALL_BACKOFF,
         TLS_FAKE_CONTEXT_RVA,
         TLS_SLOT_FETCHER_ITEMDROP_AOB,
         UNSET_SENTINEL,
@@ -262,6 +268,15 @@ def _aob_to_regex_bytes(pattern: str) -> bytes:
     return b"".join(chunks)
 
 
+def _close_process(pm: pymem.Pymem) -> None:
+    """Closes pm's process handle - dropping the Pymem object alone leaks it (pymem has no
+    __del__). Best-effort: the process may already be gone."""
+    try:
+        pm.close_process()
+    except (pymem.exception.ProcessError, OSError):
+        pass
+
+
 class PointerNotFoundError(RuntimeError):
     """Raised when an AOB pattern can't be found - build/version likely changed."""
 
@@ -334,6 +349,7 @@ class NightreignMemoryReader:
             self._gameman_slot = self._resolve_pointer_slot(pm, GAMEMAN_AOB)
             self._gamedataman_slot = self._resolve_pointer_slot(pm, GAMEDATAMAN_AOB)
         except PointerNotFoundError:
+            _close_process(pm)
             self.pm = None
             raise
 
@@ -342,6 +358,8 @@ class NightreignMemoryReader:
 
     def disconnect(self):
         """Detach from the game process. Safe to call even if not connected."""
+        if self.pm is not None:
+            _close_process(self.pm)
         self.pm = None
         self._gameman_slot = None
         self._gamedataman_slot = None
@@ -464,6 +482,25 @@ class NightreignMemoryReader:
         if not self.connected:
             raise PointerNotFoundError("not connected - call connect() first")
         return self._resolve_pointer_slot(self.pm, WORLDCHRMAN_AOB)
+
+    def resolve_speffect_target(self) -> int:
+        """Address of the game's apply-SpEffect function (see game_data.SPEFFECT_CALL_AOB), for
+        memory_writer.py's NightreignSpEffectWriter. Same call-only-when-wanted convention as
+        resolve_current_animation_target() - only resolved for slots with traps on."""
+        if not self.connected:
+            raise PointerNotFoundError("not connected - call connect() first")
+        return self._resolve_function_address(self.pm, SPEFFECT_CALL_AOB) - SPEFFECT_CALL_BACKOFF
+
+    def read_player_ins(self, worldchrman_slot: int) -> Optional[int]:
+        """The local player's PlayerIns ([WorldChrMan]+PLAYER_INS_OFFSET), or None if unreadable.
+        Re-walked on every call, same reasoning as read_current_animation()."""
+        try:
+            world_chr_man = self.pm.read_ulonglong(worldchrman_slot)
+            if not world_chr_man:
+                return None
+            return self.pm.read_ulonglong(world_chr_man + PLAYER_INS_OFFSET) or None
+        except (pymem.exception.MemoryReadError, pymem.exception.WinAPIError):
+            return None
 
     def read_current_animation(self, worldchrman_slot: int) -> Optional[int]:
         """Local player's live "Current Animation" int (see game_data.py's WORLDCHRMAN_AOB

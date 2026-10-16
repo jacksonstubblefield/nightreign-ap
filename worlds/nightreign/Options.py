@@ -9,7 +9,7 @@ from Options import Choice, OptionGroup, OptionSet, PerGameCommonOptions, Range,
 
 # Local Imports
 from .game_data import (ALL_NIGHTLORD_ENTRIES, CHARACTERS, EVERDARK_NIGHTLORDS, NIGHTLORDS,
-                        WIN_COUNT_UP_TO_MAX, WIN_COUNT_UP_TO_MIN)
+                        STATUS_TRAPS, WIN_COUNT_UP_TO_MAX, WIN_COUNT_UP_TO_MIN)
 
 
 class IncludedCharacters(OptionSet):
@@ -164,6 +164,34 @@ class ReceiveWeapons(Toggle):
     default = 1
 
 
+class WeaponPool(Choice):
+    """Which weapons a received "Randomized Weapon" can turn into. Only matters with Receive
+    Weapons on.
+
+    "Any": any weapon.
+
+    "Character Preferred": usually (see Preferred Weapon Chance) a weapon type suited to the
+    character you're playing when the weapon is delivered (e.g. Recluse gets staves and seals,
+    Raider gets colossal weapons); otherwise any weapon.
+    """
+
+    display_name = "Weapon Pool"
+    option_any = 0
+    option_character_preferred = 1
+    default = 0
+
+
+class PreferredWeaponChance(Range):
+    """With Weapon Pool set to Character Preferred, the percent chance a received weapon is one
+    of your character's preferred types. The rest are any weapon. 100 means preferred types only.
+    """
+
+    display_name = "Preferred Weapon Chance"
+    range_start = 0
+    range_end = 100
+    default = 85
+
+
 class ReceiveTalismans(Toggle):
     """If enabled, includes randomized talismans as filler items.
     """
@@ -204,6 +232,34 @@ class ReceiveSovereignSigils(Toggle):
 
     display_name = "Receive Sovereign Sigils"
     default = 1
+
+
+class TrapPercentage(Range):
+    """Percent of filler items replaced with traps. 0 turns traps off.
+
+    A trap goes off during your next Expedition (not in the Roundtable Hold), once you've landed,
+    and inflicts its status effect on you. Several traps received at once go off one at a time.
+    """
+
+    display_name = "Trap Percentage"
+    range_start = 0
+    range_end = 100
+    default = 0
+
+
+class EnabledTraps(OptionSet):
+    """Which traps Trap Percentage can place.
+
+    "Scarlet Rot Trap": inflicts Scarlet Rot.
+    "Poison Trap": inflicts Poison.
+    "Sleep Trap": puts you to sleep.
+    "Frostbite Trap": inflicts Frostbite.
+    "Madness Trap": inflicts Madness.
+    """
+
+    display_name = "Enabled Traps"
+    valid_keys = frozenset(STATUS_TRAPS)
+    default = frozenset(STATUS_TRAPS)
 
 
 class WinCountChecks(Toggle):
@@ -335,11 +391,17 @@ option_groups = [
     ]),
     OptionGroup("Items", [
         ReceiveWeapons,
+        WeaponPool,
+        PreferredWeaponChance,
         ReceiveTalismans,
         ReceiveMurk,
         StartingMurk,
         ReceiveRunes,
         ReceiveSovereignSigils,
+    ]),
+    OptionGroup("Traps", [
+        TrapPercentage,
+        EnabledTraps,
     ]),
     OptionGroup("Extra Checks", [
         WinCountChecks,
@@ -364,11 +426,15 @@ class NightreignOptions(PerGameCommonOptions):
     starting_character: StartingCharacter
     gate_character_access: GateCharacterAccess
     receive_weapons: ReceiveWeapons
+    weapon_pool: WeaponPool
+    preferred_weapon_chance: PreferredWeaponChance
     receive_talismans: ReceiveTalismans
     receive_murk: ReceiveMurk
     starting_murk: StartingMurk
     receive_runes: ReceiveRunes
     receive_sovereign_sigils: ReceiveSovereignSigils
+    trap_percentage: TrapPercentage
+    enabled_traps: EnabledTraps
     win_count_checks: WinCountChecks
     win_count_up_to: WinCountUpTo
     # weak_reward_checks: WeakRewardChecks

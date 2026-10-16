@@ -78,6 +78,14 @@ def set_player_hp(pm: pymem.Pymem, hp_address: int, hp: int) -> bool:
         return False
 
 
+def _run_remote_thread(pm: pymem.Pymem, address: int, params: Optional[int] = None) -> None:
+    """pm.start_thread(), plus closing the thread handle it returns - pymem never closes it, so
+    every remote call would otherwise leak one handle (and keep the dead thread object alive)."""
+    thread_handle = pm.start_thread(address, params=params)
+    if thread_handle:
+        pymem.process.close_handle(thread_handle)
+
+
 def _build_trampoline(eventflag_base_a_addr: int) -> bytes:
     return _TRAMPOLINE_PREFIX + struct.pack("<Q", eventflag_base_a_addr) + _TRAMPOLINE_SUFFIX
 
@@ -129,7 +137,7 @@ class NightreignMemoryWriter:
         self._ensure_allocated()
         params = struct.pack("<QQQ", eventflag_value, flag, 1 if on else 0)
         self.pm.write_bytes(self._param_addr, params, len(params))
-        self.pm.start_thread(self._trampoline_addr, params=self._param_addr)
+        _run_remote_thread(self.pm, self._trampoline_addr, params=self._param_addr)
         return True
 
     def set_all_bosses_unlocked(self, jz_addr: int, unlocked: bool) -> bool:
@@ -137,8 +145,8 @@ class NightreignMemoryWriter:
         memory_reader.py's resolve_all_bosses_unlock_target() / ACCESS_ALL_BOSSES_AOB). Unlike
         set_event_flag, this never touches AP's own unlock state - it only affects what's
         selectable in the game's own Expeditions menu. Idempotent (writing bytes that are already
-        there is a harmless no-op), so callers can call this every tick without tracking whether
-        it's already applied - see client.py's poll loop."""
+        there is a harmless no-op), but client.py's poll loop still only calls it once per hub
+        visit, to keep writes to live game code rare."""
         target = _ALL_BOSSES_UNLOCKED_BYTES if unlocked else _ALL_BOSSES_LOCKED_BYTES
         try:
             self.pm.write_bytes(jz_addr, target, len(target))
@@ -186,7 +194,44 @@ class NightreignCurrencyWriter:
             self.pm.write_bytes(self._param_addr, params, len(params))
         except (pymem.exception.MemoryWriteError, pymem.exception.WinAPIError):
             return False
-        self.pm.start_thread(self._trampoline_addrs[currency], params=self._param_addr)
+        _run_remote_thread(self.pm, self._trampoline_addrs[currency], params=self._param_addr)
+        return True
+
+
+class NightreignSpEffectWriter:
+    """Applies a SpEffect to the local player in a running nightreign.exe - the write primitive
+    behind status-effect traps. Ported from the ARM CE table's "Call SpEffect" script, a
+    3-argument call fn(PlayerIns, sp_effect_id, 1), so this reuses the EventFlag trampoline above.
+
+    Construct with the function address from NightreignMemoryReader's resolve_speffect_target().
+    Same blocking/threading caveat as NightreignMemoryWriter.set_event_flag: call via
+    loop.run_in_executor.
+    """
+
+    def __init__(self, pm: pymem.Pymem, func_addr: int):
+        self.pm = pm
+        self._func_addr = func_addr
+        self._trampoline_addr: Optional[int] = None
+        self._param_addr: Optional[int] = None
+
+    def apply(self, player_ins: int, sp_effect_id: int) -> bool:
+        """Applies sp_effect_id to the PlayerIns at player_ins (re-read by the caller right before
+        this call - see memory_reader.py's read_player_ins()). Same provisional-success caveat as
+        set_event_flag: True means the call ran, not that the effect landed."""
+        if self._trampoline_addr is None:
+            code = _build_trampoline(self._func_addr)
+            self._trampoline_addr = self.pm.allocate(len(code))
+            self.pm.write_bytes(self._trampoline_addr, code, len(code))
+        if self._param_addr is None:
+            self._param_addr = self.pm.allocate(24)
+        params = struct.pack("<QQQ", player_ins, sp_effect_id, 1)
+        try:
+            self.pm.write_bytes(self._param_addr, params, len(params))
+            # Inside the try too, unlike grant(): this runs from a background task (see client.py's
+            # _fire_trap), where an uncaught error from a game that just closed would go unlogged.
+            _run_remote_thread(self.pm, self._trampoline_addr, params=self._param_addr)
+        except (pymem.exception.MemoryWriteError, pymem.exception.WinAPIError):
+            return False
         return True
 
 
@@ -351,7 +396,7 @@ class NightreignItemDropWriter:
         self._ensure_lookup_trampoline()
         params = struct.pack("<QQ", self._lookup_buf_addr, item_id)
         self.pm.write_bytes(self._lookup_param_addr, params, len(params))
-        self.pm.start_thread(self._lookup_trampoline_addr, params=self._lookup_param_addr)
+        _run_remote_thread(self.pm, self._lookup_trampoline_addr, params=self._lookup_param_addr)
         try:
             result = self.pm.read_ulonglong(self._lookup_buf_addr + 8)
         except (pymem.exception.MemoryReadError, pymem.exception.WinAPIError):
@@ -461,7 +506,7 @@ class NightreignItemDropWriter:
         except (pymem.exception.MemoryWriteError, pymem.exception.WinAPIError):
             return False
 
-        self.pm.start_thread(self._drop_trampoline_addr)
+        _run_remote_thread(self.pm, self._drop_trampoline_addr)
         return True
 
 

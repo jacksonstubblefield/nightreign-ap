@@ -13,12 +13,13 @@ branches on.
 
 import unittest
 
+from BaseClasses import ItemClassification
 from Options import OptionError
 from test.bases import WorldTestBase
 from worlds.nightreign.game_data import (ALL_NIGHTLORD_ENTRIES, CHARACTERS, CURRENCY_BUNDLES,
                                           EVERDARK_NIGHTLORDS,
                                           NIGHTLORD_BONUS_INDICES, NIGHTLORDS,
-                                          REWARD_CHECK_THRESHOLDS)
+                                          REWARD_CHECK_THRESHOLDS, STATUS_TRAPS)
 from worlds.nightreign.Locations import (location_name, location_name_boss_only,
                                           location_name_everdark, location_name_everdark_boss_only,
                                           location_name_kill_bonus, location_name_night1,
@@ -857,3 +858,96 @@ class NightreignBundlesForAmountTest(unittest.TestCase):
                          ["Titanic Murk Bundle", "Large Murk Bundle", "Murk Bundle"])
         self.assertEqual(bundles_for_amount("Murk", 499), [])
         self.assertEqual(bundles_for_amount("Murk", 0), [])
+
+
+class NightreignWeaponPoolDefaultTest(WorldTestBase):
+    game = "Elden Ring Nightreign"
+
+    def test_slot_data_defaults_to_any(self) -> None:
+        self.assertEqual(self.world.fill_slot_data()["weapon_pool"], "any")
+
+
+class NightreignWeaponPoolCharacterPreferredTest(WorldTestBase):
+    game = "Elden Ring Nightreign"
+    options = {"weapon_pool": "character_preferred"}
+
+    def test_slot_data_carries_weapon_pool(self) -> None:
+        self.assertEqual(self.world.fill_slot_data()["weapon_pool"], "character_preferred")
+
+
+class NightreignWeaponPoolDataTest(unittest.TestCase):
+    def test_every_weapon_has_a_known_class(self) -> None:
+        from worlds.nightreign.item_data import WEAPON_CLASS_NAMES, WEAPON_TABLE, weapon_class
+        self.assertFalse({weapon_class(i) for i in WEAPON_TABLE} - set(WEAPON_CLASS_NAMES))
+
+    def test_every_character_has_a_nonempty_pool(self) -> None:
+        from worlds.nightreign.item_data import (CHARACTER_PREFERRED_WEAPON_CLASSES,
+                                                  WEAPON_CLASS_NAMES, WEAPON_TABLE,
+                                                  weapon_pool_for_character)
+        self.assertEqual(set(CHARACTER_PREFERRED_WEAPON_CLASSES), set(CHARACTERS))
+        for character, classes in CHARACTER_PREFERRED_WEAPON_CLASSES.items():
+            self.assertTrue(classes <= set(WEAPON_CLASS_NAMES), character)
+            pool = weapon_pool_for_character(character)
+            self.assertTrue(pool, character)
+            self.assertLess(len(pool), len(WEAPON_TABLE), character)
+
+    def test_recluse_only_gets_staves_and_seals(self) -> None:
+        from worlds.nightreign.item_data import weapon_class, weapon_pool_for_character
+        self.assertEqual({weapon_class(i) for i in weapon_pool_for_character("Recluse")},
+                         {33, 34})
+
+    def test_unknown_character_falls_back_to_full_table(self) -> None:
+        from worlds.nightreign.item_data import WEAPON_TABLE, weapon_pool_for_character
+        self.assertEqual(weapon_pool_for_character(None), list(WEAPON_TABLE))
+
+
+class NightreignPreferredWeaponChanceTest(WorldTestBase):
+    game = "Elden Ring Nightreign"
+    options = {"weapon_pool": "character_preferred", "preferred_weapon_chance": 60}
+
+    def test_slot_data_carries_preferred_weapon_chance(self) -> None:
+        self.assertEqual(self.world.fill_slot_data()["preferred_weapon_chance"], 60)
+
+
+# --- Status-effect traps ---
+
+class NightreignTrapsOffByDefaultTest(WorldTestBase):
+    game = "Elden Ring Nightreign"
+
+    def test_no_traps_and_slot_data_off(self) -> None:
+        names = {item.name for item in self.multiworld.itempool if item.player == self.player}
+        self.assertFalse(names & set(STATUS_TRAPS))
+        self.assertFalse(self.world.fill_slot_data()["status_traps"])
+
+
+class NightreignAllTrapsTest(WorldTestBase):
+    game = "Elden Ring Nightreign"
+    options = {"trap_percentage": 100}
+
+    def test_every_filler_is_a_trap(self) -> None:
+        own = [item for item in self.multiworld.itempool if item.player == self.player]
+        filler = [item for item in own if item.name in FILLER_NAMES or item.name in STATUS_TRAPS]
+        self.assertTrue(filler)
+        self.assertTrue(all(item.name in STATUS_TRAPS for item in filler))
+        self.assertTrue(all(item.classification & ItemClassification.trap for item in filler))
+        self.assertTrue(self.world.fill_slot_data()["status_traps"])
+
+
+class NightreignSingleTrapTypeTest(WorldTestBase):
+    game = "Elden Ring Nightreign"
+    options = {"trap_percentage": 100, "enabled_traps": ["Poison Trap"]}
+
+    def test_only_enabled_trap_in_pool(self) -> None:
+        names = {item.name for item in self.multiworld.itempool if item.player == self.player}
+        self.assertIn("Poison Trap", names)
+        self.assertNotIn("Scarlet Rot Trap", names)
+
+
+class NightreignNoEnabledTrapsTest(WorldTestBase):
+    game = "Elden Ring Nightreign"
+    options = {"trap_percentage": 100, "enabled_traps": []}
+
+    def test_empty_trap_set_places_no_traps(self) -> None:
+        names = {item.name for item in self.multiworld.itempool if item.player == self.player}
+        self.assertFalse(names & set(STATUS_TRAPS))
+        self.assertFalse(self.world.fill_slot_data()["status_traps"])

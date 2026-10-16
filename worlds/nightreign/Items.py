@@ -3,7 +3,7 @@ from typing import NamedTuple
 from BaseClasses import Item, ItemClassification
 
 from .game_data import (ACCESS_CHARACTERS, ACCESS_NIGHTLORDS, CURRENCY_BUNDLES, EVERDARK_NIGHTLORDS,
-                        NIGHTLORDS)
+                        NIGHTLORDS, STATUS_TRAPS)
 
 
 class NightreignItem(Item):
@@ -70,6 +70,17 @@ item_table = {
         + len(EVERDARK_NIGHTLORDS) + i
     )
     for i, name in enumerate(CURRENCY_BUNDLES)
+} | {
+    # Status-effect traps (see game_data.STATUS_TRAPS), mixed into filler by trap_percentage (see
+    # __init__.py's get_filler_item_name) and applied client-side via the game's own SpEffect call
+    # (see client.py's _deliver_pending_traps). Appended after everything above (ids continue
+    # sequentially) to avoid disturbing any existing seed's item ids.
+    name: ItemData(
+        BASE_ID + len(NIGHTLORDS) + len(ACCESS_NIGHTLORDS) + 2 + len(ACCESS_CHARACTERS)
+        + len(EVERDARK_NIGHTLORDS) + len(CURRENCY_BUNDLES) + i,
+        ItemClassification.trap,
+    )
+    for i, name in enumerate(STATUS_TRAPS)
 }
 
 # get_filler_item_name() must only ever choose from FILLER_ITEM_NAMES, not item_table's full key

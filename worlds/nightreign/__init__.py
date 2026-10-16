@@ -522,6 +522,9 @@ class NightreignWorld(World):
         return names
 
     def get_filler_item_name(self) -> str:
+        traps = sorted(self.options.enabled_traps.value)
+        if traps and self.random.randint(1, 100) <= self.options.trap_percentage.value:
+            return self.random.choice(traps)
         name = self.random.choice(self._enabled_filler_names())
         if name not in CURRENCY_COUNTER_OFFSETS:
             return name
@@ -535,10 +538,15 @@ class NightreignWorld(World):
             "gate_character_access": bool(self.options.gate_character_access),
             "unlock_all_bosses_in_game": bool(self.options.unlock_all_bosses_in_game),
             "receive_weapons": bool(self.options.receive_weapons),
+            "weapon_pool": self.options.weapon_pool.current_key,
+            "preferred_weapon_chance": self.options.preferred_weapon_chance.value,
             "receive_talismans": bool(self.options.receive_talismans),
             "receive_murk": bool(self.options.receive_murk),
             "receive_runes": bool(self.options.receive_runes),
             "receive_sovereign_sigils": bool(self.options.receive_sovereign_sigils),
+            # Only tells the client whether to resolve the SpEffect write path - which trap items
+            # were actually placed comes through as ordinary received items.
+            "status_traps": bool(self.options.trap_percentage.value and self.options.enabled_traps.value),
             "starting_murk": self.options.starting_murk.value,
             "win_count_checks": bool(self.options.win_count_checks),
             "win_count_thresholds": self.win_count_thresholds,

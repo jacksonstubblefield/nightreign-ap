@@ -45,7 +45,9 @@ see memory_reader.py's is_save_loaded()) re-applies a code patch (memory_reader.
 that keeps every boss, including DLC Nightlords and Everdark Sovereigns, selectable in the game's
 own Expeditions menu regardless of real in-game unlock progress - purely a menu-selectability patch,
 it never touches AP's own unlock state, so gate_boss_access's Access-item checks above still apply
-exactly as if this were off. With all four options off, received items
+exactly as if this were off. Status-effect traps (Scarlet Rot/Poison/Sleep/Frostbite/Madness, see
+game_data.STATUS_TRAPS) go off during an Expedition, after the same settle window as drops, by calling
+the game's own apply-SpEffect function on the player (see _maybe_start_trap). With all four options off, received items
 have no in-game effect - the base CommonContext/CLI/GUI machinery just logs
 them, same as before any was added. Wins are detected via _trigger_win (at most once per
 Expedition) from two signals: primarily the buff-pick counter ticking in the Day 3 Nightlord arena
@@ -105,12 +107,14 @@ from .game_data import (ACCESS_CHARACTERS, ACCESS_ITEM_EVENT_FLAGS, ACCESS_NIGHT
                         CHARACTER_ACCESS_EVENT_FLAGS, CURRENCY_BUNDLES,
                         CURRENCY_COUNTER_OFFSETS, CURRENCY_GRANT_MAX,
                         DAY_PHASE_DAY_2, DAY_PHASE_DAY_3, DAY_PHASE_NIGHT_1, DAY_PHASE_NIGHT_2, EVERDARK_NIGHTLORDS,
-                        NIGHTLORD_BONUS_INDICES, currency_bundle_names, is_flying_animation,
+                        NIGHTLORD_BONUS_INDICES, STATUS_TRAPS, TRAP_APPLY_INTERVAL,
+                        currency_bundle_names, is_flying_animation,
                         is_nightlord_kill_tick, starting_free_characters,
                         starting_free_everdark_nightlords, starting_free_nightlords)
 from .death_link import DEATH_LINK_MODES, DeathLinkDetector
 from .item_data import (EFFECT_CAP_MAP, TALISMAN_TABLE, WEAPON_ART_TABLE, WEAPON_TABLE,
-                        natural_weapon_tier, roll_effect_tier, roll_upgrade_tier)
+                        natural_weapon_tier, roll_effect_tier, roll_upgrade_tier,
+                        weapon_pool_for_character)
 from .Items import lookup_id_to_name
 from .Locations import (location_name, location_name_boss_only, location_name_everdark,
                         location_name_everdark_boss_only, location_name_kill_bonus,
@@ -118,7 +122,7 @@ from .Locations import (location_name, location_name_boss_only, location_name_ev
                         location_name_to_id, location_name_weak_reward, location_name_win_count)
 from .memory_reader import EACDetectedError, NightreignMemoryReader, PointerNotFoundError
 from .memory_writer import (NightreignCurrencyWriter, NightreignItemDropWriter,
-                            NightreignMemoryWriter, set_player_hp)
+                            NightreignMemoryWriter, NightreignSpEffectWriter, set_player_hp)
 from . import tracker
 from .overlay import NightreignOverlay
 
@@ -136,6 +140,9 @@ EXPEDITION_ENTRY_SETTLE_SECONDS = 60
 # How long to wait after arriving in the Roundtable Hold before granting Murk/Sovereign Sigils -
 # a margin past the load, same caution as EXPEDITION_ENTRY_SETTLE_SECONDS.
 HUB_ENTRY_SETTLE_SECONDS = 5
+# Minimum gap between two traps going off, so a backlog of received traps spreads out over the
+# Expedition instead of landing at once (a second rot trap on an already-rotting player does nothing).
+TRAP_COOLDOWN_SECONDS = 30
 
 # slot_data key -> currency name (see game_data.CURRENCY_COUNTER_OFFSETS). Runes are granted
 # during an Expedition, the other two in the Roundtable Hold - see poll_loop.
@@ -155,8 +162,9 @@ GOAL_DISPLAY_NAMES = {
 }
 
 # Item received toast duration
-TOAST_DURATION_SECONDS = 3.0
-# Received-DeathLink toast - longer, since it lands at the same moment you go down.
+# (6s - eyes are usually on an enemy or the map, so 3s was only enough to notice, not read)
+TOAST_DURATION_SECONDS = 6.0
+# Received-DeathLink toast.
 DEATH_LINK_TOAST_SECONDS = 6.0
 
 
@@ -225,6 +233,8 @@ class NightreignContext(CommonContext):
     gate_character_access: bool
     unlock_all_bosses_in_game: bool
     randomize_weapons: bool
+    weapon_pool: str
+    preferred_weapon_chance: int
     randomize_talismans: bool
     currency_items: set
     everdark_nightlords: set
@@ -256,17 +266,24 @@ class NightreignContext(CommonContext):
     item_drop_writer: Optional[NightreignItemDropWriter]
     currency_writer: Optional[NightreignCurrencyWriter]
     _currency_worldchrman_slot: Optional[int]
+    status_traps: bool
+    speffect_writer: Optional[NightreignSpEffectWriter]
+    _trap_worldchrman_slot: Optional[int]
+    _trap_task: Optional[asyncio.Task]
+    _last_trap_time: Optional[float]
     _worldchrman_slot: Optional[int]
     _hub_exit_time: Optional[float]
     _hub_entry_time: Optional[float]
     _all_bosses_unlock_addr: Optional[int]
     _all_bosses_worldchrman_slot: Optional[int]
+    _all_bosses_unlocked_this_hub: bool
 
     _last_pulse: Optional[int]
     _synced_flags: set
     _delivered_weapon_keys: set
     _delivered_talisman_keys: set
     _delivered_currency_keys: dict
+    _delivered_trap_keys: set
     _locked_boss_warned: bool
     _locked_character_warned: bool
     _locked_run_drop_withheld_warned: bool
@@ -291,6 +308,8 @@ class NightreignContext(CommonContext):
         self.gate_character_access = False
         self.unlock_all_bosses_in_game = False
         self.randomize_weapons = False
+        self.weapon_pool = "any"
+        self.preferred_weapon_chance = 85
         self.randomize_talismans = False
         self.currency_items = set()
         self.everdark_nightlords = set()
@@ -322,16 +341,23 @@ class NightreignContext(CommonContext):
         self.item_drop_writer = None
         self.currency_writer = None
         self._currency_worldchrman_slot = None
+        self.status_traps = False
+        self.speffect_writer = None
+        self._trap_worldchrman_slot = None
+        self._trap_task = None
+        self._last_trap_time = None
         self._worldchrman_slot = None
         self._hub_exit_time = None
         self._hub_entry_time = None
         self._all_bosses_unlock_addr = None
         self._all_bosses_worldchrman_slot = None
+        self._all_bosses_unlocked_this_hub = False
         self._last_pulse = None
         self._synced_flags = set()
         self._delivered_weapon_keys = set()
         self._delivered_talisman_keys = set()
         self._delivered_currency_keys = {name: set() for name in CURRENCY_COUNTER_OFFSETS}
+        self._delivered_trap_keys = set()
         self._locked_boss_warned = False
         self._locked_character_warned = False
         self._locked_run_drop_withheld_warned = False
@@ -516,6 +542,8 @@ class NightreignContext(CommonContext):
             # fill_slot_data), not "randomize_weapons"/"randomize_talismans" - using the wrong keys
             # previously fell back to False regardless of the player's actual YAML settings.
             self.randomize_weapons = bool(self.slot_data.get("receive_weapons", False))
+            self.weapon_pool = self.slot_data.get("weapon_pool", "any")
+            self.preferred_weapon_chance = int(self.slot_data.get("preferred_weapon_chance", 85))
             self.randomize_talismans = bool(self.slot_data.get("receive_talismans", False))
             self.currency_items = {
                 name for key, name in CURRENCY_SLOT_DATA_KEYS.items()
@@ -525,6 +553,7 @@ class NightreignContext(CommonContext):
             # same Murk path even when receive_murk (Murk as filler) is off.
             if self.slot_data.get("starting_murk", 0):
                 self.currency_items.add("Murk")
+            self.status_traps = bool(self.slot_data.get("status_traps", False))
             self.everdark_nightlords = set(self.slot_data.get("everdark_nightlords") or [])
             # Seeds generated before these keys existed fall back to every boss/character.
             self.included_nightlords = list(
@@ -595,6 +624,7 @@ class NightreignContext(CommonContext):
             self._ensure_item_drop_ready()
             self._ensure_animation_ready()
             self._ensure_currency_ready()
+            self._ensure_trap_ready()
             self._ensure_all_bosses_unlock_ready()
 
         if cmd == "ReceivedItems":
@@ -900,7 +930,7 @@ class NightreignContext(CommonContext):
         }
         return received - delivered_keys
 
-    def _roll_weapon_drop(self, index: int, player: int) -> dict:
+    def _roll_weapon_drop(self, index: int, player: int, character: Optional[str] = None) -> dict:
         """Deterministic roll for one "Randomized Weapon" filler instance, seeded off which
         received-item instance sent it (seed_name + index + player) rather than delivery order or
         timing - so a reconnect, a retried drop, or a delayed Expedition entry always reproduces
@@ -922,9 +952,22 @@ class NightreignContext(CommonContext):
         upgrade_level actually requested from drop_item() is only the gap above that weapon's own
         natural floor, never negative. memory_writer.py's _clamp_upgrade_tier still applies on top
         of this for the separate, orthogonal concern of a weapon's own max reinforcement ceiling.
+
+        character (weapon_pool "character_preferred" only) joins the seed, so the same item
+        reproduces the same weapon per character, and preferred_weapon_chance percent
+        of the time narrows the weapon id pick to item_data.weapon_pool_for_character (otherwise
+        the full table); None keeps the original full-table roll and seed unchanged.
         """
-        rng = random.Random(f"{self.seed_name}:{index}:{player}:weapon")
-        item_id = rng.choice(list(WEAPON_TABLE))
+        if character is None:
+            rng = random.Random(f"{self.seed_name}:{index}:{player}:weapon")
+            pool = list(WEAPON_TABLE)
+        else:
+            rng = random.Random(f"{self.seed_name}:{index}:{player}:weapon:{character}")
+            if rng.randint(1, 100) <= self.preferred_weapon_chance:
+                pool = weapon_pool_for_character(character)
+            else:
+                pool = list(WEAPON_TABLE)
+        item_id = rng.choice(pool)
         target_tier = roll_upgrade_tier(rng.randint(0, 100))
         return {
             "item_id": item_id,
@@ -991,8 +1034,15 @@ class NightreignContext(CommonContext):
                                 "will retry on next Expedition entry.", log_label, index, player)
 
     async def _deliver_pending_weapons(self) -> None:
+        roll_fn = self._roll_weapon_drop
+        if self.weapon_pool == "character_preferred":
+            character = self.reader.read_character_class_name()
+            if character is None:
+                # Left pending, retried next tick - better than spending it on a random weapon.
+                return
+            roll_fn = functools.partial(self._roll_weapon_drop, character=character)
         await self._deliver_pending_drops(
-            "Randomized Weapon", self._roll_weapon_drop, self._delivered_weapon_keys,
+            "Randomized Weapon", roll_fn, self._delivered_weapon_keys,
             "weapon_drop", "randomized weapon", "Weapon received"
         )
 
@@ -1008,8 +1058,9 @@ class NightreignContext(CommonContext):
 
     def _receives_in_run_items(self) -> bool:
         """True if anything is delivered during an Expedition (and so needs _hub_exit_time's
-        settle window tracked) - weapon/talisman drops, or Runes."""
-        return self.randomize_weapons or self.randomize_talismans or "Runes" in self.currency_items
+        settle window tracked) - weapon/talisman drops, Runes, or traps."""
+        return (self.randomize_weapons or self.randomize_talismans
+                or "Runes" in self.currency_items or self.status_traps)
 
     def _ensure_currency_ready(self) -> None:
         """Same "build once both an option and the game connection are known" shape as
@@ -1087,6 +1138,99 @@ class NightreignContext(CommonContext):
         if self.overlay is not None:
             self._show_toast(f"+{amount:,} {currency}")
 
+    def _ensure_trap_ready(self) -> None:
+        """Same "build once both an option and the game connection are known" shape as
+        _ensure_currency_ready. Resolves its own WorldChrMan slot (PlayerIns and HP), kept separate
+        from _worldchrman_slot for the same reason _all_bosses_worldchrman_slot is."""
+        if not self.status_traps or not self.reader.connected or self.speffect_writer is not None:
+            return
+        try:
+            func_addr = self.reader.resolve_speffect_target()
+            self._trap_worldchrman_slot = self.reader.resolve_current_animation_target()
+        except PointerNotFoundError as e:
+            logger.error("Trap write path unavailable (%s) - traps won't go off this session, "
+                         "the read-only tracker is unaffected.", e)
+            return
+        self.speffect_writer = NightreignSpEffectWriter(self.reader.pm, func_addr)
+        logger.info("Trap SpEffect writer resolved.")
+
+    def _maybe_start_trap(self) -> None:
+        """Starts the oldest pending trap, one at a time and at most one per TRAP_COOLDOWN_SECONDS.
+        Runs as a background task rather than awaited: a trap's applications are
+        TRAP_APPLY_INTERVAL apart (several seconds in all), which would otherwise stall
+        poll_loop's win detection."""
+        if self.speffect_writer is None or self._trap_worldchrman_slot is None:
+            return
+        if self._trap_task is not None and not self._trap_task.done():
+            return
+        if (self._last_trap_time is not None
+                and time.monotonic() - self._last_trap_time < TRAP_COOLDOWN_SECONDS):
+            return
+        pending = sorted(
+            (key, name) for name in STATUS_TRAPS
+            for key in self._pending_drop_keys(name, self._delivered_trap_keys)
+        )
+        if pending:
+            key, name = pending[0]
+            self._trap_task = asyncio.create_task(self._fire_trap(key, name))
+
+    async def _fire_trap(self, key: tuple, name: str) -> None:
+        """Applies one trap's SpEffect STATUS_TRAPS[name] times to the player. Skipped (and
+        retried next tick) while the player is dead/downed, so a trap isn't wasted on a corpse.
+        Marked delivered on the first application that runs, so a disconnect partway through
+        can't fire it twice."""
+        sp_effect_id, applications = STATUS_TRAPS[name]
+        hp = self.reader.read_player_hp(self._trap_worldchrman_slot)
+        if hp is None or hp[0] <= 0:
+            return
+        loop = asyncio.get_running_loop()
+        applied = 0
+        for i in range(applications):
+            if i:
+                await asyncio.sleep(TRAP_APPLY_INTERVAL)
+            writer = self.speffect_writer
+            player_ins = (self.reader.read_player_ins(self._trap_worldchrman_slot)
+                          if writer is not None and self.reader.connected else None)
+            if player_ins is None:
+                break
+            if not await loop.run_in_executor(None, writer.apply, player_ins, sp_effect_id):
+                break
+            if not applied:
+                self._delivered_trap_keys.add(key)
+                self._last_trap_time = time.monotonic()
+                self._announce_trap(name, key[1])
+            applied += 1
+        if not applied:
+            return
+        index, player = key
+        self._append_event({
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "type": "trap",
+            "trap": name,
+            "sp_effect_id": sp_effect_id,
+            "applications": applied,
+            "index": index,
+            "player": player,
+        })
+        logger.info("%s went off (SpEffect %s x%s).", name, sp_effect_id, applied)
+
+    def _announce_trap(self, name: str, sender: int) -> None:
+        """Says what just happened and who sent it, as soon as a trap's first application lands -
+        the in-game status banner alone doesn't explain where it came from. Toast for the player
+        mid-fight (DeathLink's red style and duration), plus the "Client" logger so it also shows
+        in the AP client window - this file's own logger doesn't reach that tab (see the
+        EACDetectedError branch in poll_loop)."""
+        if sender == self.slot:
+            text = f"\u2620 {name}!"
+            message = f"{name} went off (from your own world)."
+        else:
+            sender_name = self.player_names.get(sender, "Archipelago")
+            text = f"\u2620 {name} from {sender_name}"
+            message = f"{name} from {sender_name} went off."
+        logging.getLogger("Client").info(message)
+        if self.overlay is not None:
+            self._show_toast(text, style="death_link", duration=DEATH_LINK_TOAST_SECONDS)
+
     # --- Per-run local state file ---
     # One file per AP world/slot (keyed by seed + slot name), so switching multiworld games
     # never mixes up which locations were sent. Also logs wins and unresolved boss_id detections.
@@ -1129,6 +1273,10 @@ class NightreignContext(CommonContext):
                     }
                     for name in CURRENCY_COUNTER_OFFSETS
                 }
+                self._delivered_trap_keys = {
+                    (int(index), int(player))
+                    for index, player in data.get("delivered_trap_keys", [])
+                }
             except (json.JSONDecodeError, OSError, ValueError) as e:
                 logger.warning(
                     "Could not read existing Nightreign run state at %s: %s", self.run_state_path, e
@@ -1140,6 +1288,7 @@ class NightreignContext(CommonContext):
                 self._delivered_weapon_keys = set()
                 self._delivered_talisman_keys = set()
                 self._delivered_currency_keys = {name: set() for name in CURRENCY_COUNTER_OFFSETS}
+                self._delivered_trap_keys = set()
         else:
             self.checked_location_ids = set()
             self.win_count = 0
@@ -1148,6 +1297,7 @@ class NightreignContext(CommonContext):
             self._delivered_weapon_keys = set()
             self._delivered_talisman_keys = set()
             self._delivered_currency_keys = {name: set() for name in CURRENCY_COUNTER_OFFSETS}
+            self._delivered_trap_keys = set()
             self._write_run_state(seed_name, slot_name, events=[])
 
         logger.info("Nightreign run state file: %s", self.run_state_path)
@@ -1163,6 +1313,7 @@ class NightreignContext(CommonContext):
             "delivered_weapon_keys": sorted(list(key) for key in self._delivered_weapon_keys),
             "delivered_talisman_keys": sorted(list(key) for key in self._delivered_talisman_keys),
             "delivered_currency_keys": self._currency_keys_to_json(),
+            "delivered_trap_keys": sorted(list(key) for key in self._delivered_trap_keys),
             "events": events,
         }
         with open(self.run_state_path, "w", encoding="utf-8") as f:
@@ -1196,6 +1347,7 @@ class NightreignContext(CommonContext):
             list(key) for key in self._delivered_talisman_keys
         )
         data["delivered_currency_keys"] = self._currency_keys_to_json()
+        data["delivered_trap_keys"] = sorted(list(key) for key in self._delivered_trap_keys)
         data.setdefault("events", []).append(event)
         with open(self.run_state_path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
@@ -1216,11 +1368,14 @@ class NightreignContext(CommonContext):
                     self.item_drop_writer = None
                     self.currency_writer = None
                     self._currency_worldchrman_slot = None
+                    self.speffect_writer = None
+                    self._trap_worldchrman_slot = None
                     self._worldchrman_slot = None
                     self._hub_exit_time = None
                     self._hub_entry_time = None
                     self._all_bosses_unlock_addr = None
                     self._all_bosses_worldchrman_slot = None
+                    self._all_bosses_unlocked_this_hub = False
                     self._locked_boss_warned = False
                     self._locked_character_warned = False
                     self._locked_run_drop_withheld_warned = False
@@ -1239,6 +1394,7 @@ class NightreignContext(CommonContext):
                             self._ensure_item_drop_ready()
                             self._ensure_animation_ready()
                             self._ensure_currency_ready()
+                            self._ensure_trap_ready()
                             self._ensure_all_bosses_unlock_ready()
                         else:
                             await asyncio.sleep(RECONNECT_INTERVAL)
@@ -1309,18 +1465,24 @@ class NightreignContext(CommonContext):
                 if self.death_link_mode != "off" or self._pending_death_link is not None:
                     await self._poll_death_link(in_hub)
 
+                if in_hub is False:
+                    # Re-arm on every Expedition, so the next hub visit patches once more.
+                    self._all_bosses_unlocked_this_hub = False
                 if (self.unlock_all_bosses_in_game and self.writer is not None
                         and self._all_bosses_unlock_addr is not None
-                        and self._all_bosses_worldchrman_slot is not None and in_hub):
+                        and self._all_bosses_worldchrman_slot is not None and in_hub
+                        and not self._all_bosses_unlocked_this_hub):
                     # in_hub alone can't tell the main menu apart from the actual hub (both read
                     # True - see the comment above), so also require WorldChrMan to resolve to a
                     # live object (see memory_reader.py's is_save_loaded()) before patching menu
                     # code - firing this at the main menu, before any save is even loaded, is
-                    # untested and deliberately avoided. Idempotent (see set_all_bosses_unlocked's
-                    # docstring), so retrying every tick this condition holds is cheap and needs no
-                    # "already applied" bookkeeping.
+                    # untested and deliberately avoided. Written once per hub visit rather than
+                    # every tick: it's a write to live game code, so keep it as rare as possible. A
+                    # failed write leaves the latch unset and retries next tick.
                     if self.reader.is_save_loaded(self._all_bosses_worldchrman_slot):
-                        self.writer.set_all_bosses_unlocked(self._all_bosses_unlock_addr, True)
+                        self._all_bosses_unlocked_this_hub = self.writer.set_all_bosses_unlocked(
+                            self._all_bosses_unlock_addr, True
+                        )
 
                 if self.gate_boss_access:
                     if in_hub:
@@ -1435,6 +1597,9 @@ class NightreignContext(CommonContext):
                     and self._hub_exit_time is not None
                     and time.monotonic() - self._hub_exit_time >= EXPEDITION_ENTRY_SETTLE_SECONDS
                 ):
+                    # Traps aren't rewards, so unlike drops below they still go off on a locked run.
+                    if self.status_traps:
+                        self._maybe_start_trap()
                     if self._current_run_is_locked():
                         # Don't spend an earned weapon/talisman drop on a run that's on a
                         # not-yet-unlocked boss/character - _handle_win would refuse to send a check

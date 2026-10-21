@@ -231,6 +231,17 @@ class ReceiveSovereignSigils(Toggle):
     default = 1
 
 
+class OtherworldOfferings(Toggle):
+    """If enabled, received weapons, talismans and runes are held as offerings - gifts sent from
+    other worlds to aid you against the Night - instead of arriving automatically. Accept them
+    whenever you need them from the client's Offerings tab or with /accept, e.g. to recover after
+    a death or to save them for a hard Nightlord instead of spending them on an easy run.
+    """
+
+    display_name = "Otherworld Offerings"
+    default = 0
+
+
 class TrapPercentage(Range):
     """Percent of filler items replaced with traps. 0 turns traps off.
 
@@ -369,6 +380,7 @@ option_groups = [
         StartingMurk,
         ReceiveRunes,
         ReceiveSovereignSigils,
+        OtherworldOfferings,
     ]),
     OptionGroup("Traps", [
         TrapPercentage,
@@ -404,6 +416,7 @@ class NightreignOptions(PerGameCommonOptions):
     starting_murk: StartingMurk
     receive_runes: ReceiveRunes
     receive_sovereign_sigils: ReceiveSovereignSigils
+    otherworld_offerings: OtherworldOfferings
     trap_percentage: TrapPercentage
     enabled_traps: EnabledTraps
     win_count_checks: WinCountChecks

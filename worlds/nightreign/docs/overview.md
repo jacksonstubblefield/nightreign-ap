@@ -47,6 +47,29 @@ never sent back out, so one death doesn't bounce around the party.
 Type `/deathlink` in the client to turn it on or off mid-session, or `/deathlink dead` /
 `/deathlink downed` / `/deathlink off` to pick a mode.
 
+## Otherworld Offerings
+
+**New and not yet tested in a real game - please report any feedback or bugs.**
+
+With the `otherworld_offerings` option on, received weapons, talismans and runes don't arrive on
+their own. They're held as offerings, gifts sent from other worlds to aid you against the Night,
+until you accept them. Save them for a run that needs them, like a tough Nightlord or catching up
+after a death, instead of spending them on an easy run.
+
+Accept offerings from the client's **Offerings** tab (only shown when the option is on), or type:
+
+- `/offerings`: list the offerings you're holding.
+- `/accept weapon`, `/accept talisman`, `/accept runes` (a 5,000 Rune Bundle) or
+  `/accept heroic` (a 100,000 Heroic Rune Bundle), followed by a count or `all`. For example,
+  `/accept runes 3`.
+- `/accept cancel`: take back every accepted offering that hasn't arrived yet.
+
+An accepted offering arrives the same way any other received item does: once you're in an
+Expedition and it has started, and for weapons and talismans, once you're on the ground. One
+accepted in the Roundtable Hold waits for your next Expedition. Nothing arrives on a run whose
+boss or character you haven't unlocked yet. Accepted offerings that haven't arrived yet are
+forgotten when the client closes, but the offerings themselves are kept.
+
 ## Credits
 
 Thanks to the Cheat Engine data miners who laid the foundation

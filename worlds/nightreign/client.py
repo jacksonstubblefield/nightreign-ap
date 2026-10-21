@@ -47,7 +47,9 @@ own Expeditions menu regardless of real in-game unlock progress - purely a menu-
 it never touches AP's own unlock state, so gate_boss_access's Access-item checks above still apply
 exactly as if this were off. Status-effect traps (Scarlet Rot/Poison/Sleep/Frostbite/Madness, see
 game_data.STATUS_TRAPS) go off during an Expedition, after the same settle window as drops, by calling
-the game's own apply-SpEffect function on the player (see _maybe_start_trap). With all four options off, received items
+the game's own apply-SpEffect function on the player (see _maybe_start_trap). With
+otherworld_offerings on, weapon/talisman drops and Runes are held as offerings until the player
+accepts them from the Offerings tab or with /accept - see offerings.py. With all four options off, received items
 have no in-game effect - the base CommonContext/CLI/GUI machinery just logs
 them, same as before any was added. Wins are detected via _trigger_win (at most once per
 Expedition) from two signals: primarily the buff-pick counter ticking in the Day 3 Nightlord arena
@@ -116,6 +118,7 @@ from .item_data import (EFFECT_CAP_MAP, TALISMAN_TABLE, WEAPON_ART_TABLE, WEAPON
                         natural_weapon_tier, roll_effect_tier, roll_upgrade_tier,
                         weapon_pool_for_character)
 from .Items import lookup_id_to_name
+from .offerings import ACCEPT_ALIASES, OFFERING_ITEMS, OFFERING_RUNES, OfferingQueue
 from .Locations import (location_name, location_name_boss_only, location_name_everdark,
                         location_name_everdark_boss_only, location_name_kill_bonus,
                         location_name_night1, location_name_night2, location_name_strong_reward,
@@ -217,6 +220,46 @@ class NightreignCommandProcessor(ClientCommandProcessor):
         self.output(f"DeathLink: {mode}")
         return True
 
+    def _cmd_offerings(self) -> bool:
+        """List the Otherworld Offerings you're holding."""
+        if not self.ctx.otherworld_offerings:
+            self.output("Otherworld Offerings are off for this slot - in-run items arrive "
+                        "automatically.")
+            return True
+        held = self.ctx.offerings_held()
+        if not held:
+            self.output("This slot doesn't receive any items that can be held as offerings.")
+            return True
+        for name, (count, accepted) in held.items():
+            self.output(f"{name}: {count} held" + (f", {accepted} accepted" if accepted else ""))
+        status = self.ctx.offering_status()
+        if status:
+            self.output(status)
+        return True
+
+    def _cmd_accept(self, item: str = "", count: str = "1") -> bool:
+        """Accept held offerings: /accept <weapon|talisman|runes|heroic> [count|all], or
+        /accept cancel to take back every accepted offering that hasn't arrived yet."""
+        item = item.lower()
+        if item == "cancel":
+            self.ctx.offering_queue.clear()
+            self.output("Cancelled every accepted offering that hadn't arrived yet.")
+            return True
+        name = ACCEPT_ALIASES.get(item)
+        if name is None:
+            self.output(f"Usage: /accept <{'|'.join(ACCEPT_ALIASES)}> [count|all], "
+                        "or /accept cancel.")
+            return False
+        if count.lower() == "all":
+            amount = None
+        elif count.isdigit() and int(count) > 0:
+            amount = int(count)
+        else:
+            self.output(f"Unknown count '{count}' - use a number or all.")
+            return False
+        self.output(self.ctx.accept_offering(name, amount))
+        return True
+
 
 class NightreignContext(CommonContext):
     """Full client context for nightreign
@@ -284,6 +327,10 @@ class NightreignContext(CommonContext):
     _delivered_talisman_keys: set
     _delivered_currency_keys: dict
     _delivered_trap_keys: set
+    otherworld_offerings: bool
+    offering_queue: OfferingQueue
+    _offering_run_locked: bool
+    _offering_flying: bool
     _locked_boss_warned: bool
     _locked_character_warned: bool
     _locked_run_drop_withheld_warned: bool
@@ -358,6 +405,10 @@ class NightreignContext(CommonContext):
         self._delivered_talisman_keys = set()
         self._delivered_currency_keys = {name: set() for name in CURRENCY_COUNTER_OFFSETS}
         self._delivered_trap_keys = set()
+        self.otherworld_offerings = False
+        self.offering_queue = OfferingQueue()
+        self._offering_run_locked = False
+        self._offering_flying = False
         self._locked_boss_warned = False
         self._locked_character_warned = False
         self._locked_run_drop_withheld_warned = False
@@ -380,6 +431,7 @@ class NightreignContext(CommonContext):
         from kivy.metrics import dp
         from kivy.uix.behaviors import ButtonBehavior
         from kivymd.uix.boxlayout import MDBoxLayout
+        from kivymd.uix.button import MDButton, MDButtonText
         from kivymd.uix.label import MDLabel
         from kivymd.uix.scrollview import MDScrollView
 
@@ -460,6 +512,72 @@ class NightreignContext(CommonContext):
 
         ctx = self
 
+        def button(text: str, on_release, disabled: bool = False) -> MDButton:
+            return MDButton(MDButtonText(text=text), style="tonal", disabled=disabled,
+                            pos_hint={"center_y": 0.5}, on_release=lambda *_args: on_release())
+
+        class OfferingsTab(MDBoxLayout):
+            """Held Otherworld Offerings with accept buttons - see offerings.py. Every button goes
+            through the same ctx methods as /offerings and /accept."""
+
+            def __init__(self, **kwargs):
+                super().__init__(orientation="vertical", adaptive_height=True, spacing=dp(6),
+                                 padding=(dp(8), dp(8), dp(8), dp(8)), **kwargs)
+                self._last_state = ()  # never equal to a real state, so the first tick renders
+
+            def label(self, text: str, **kwargs) -> MDLabel:
+                return MDLabel(text=text, adaptive_height=True, pos_hint={"center_y": 0.5},
+                               **kwargs)
+
+            def row(self, *widgets) -> None:
+                box = MDBoxLayout(orientation="horizontal", adaptive_height=True, spacing=dp(8))
+                for widget in widgets:
+                    box.add_widget(widget)
+                self.add_widget(box)
+
+            def act(self, action) -> None:
+                # Via "Client", the logger the GUI's visible Archipelago tab follows.
+                logging.getLogger("Client").info(action())
+                self._last_state = ()
+                self.refresh()
+
+            def refresh(self) -> None:
+                state = (tuple(ctx.offerings_held().items()), ctx.offering_status())
+                if state == self._last_state:
+                    return
+                self._last_state = state
+                held, status = state
+                self.clear_widgets()
+                self.add_widget(self.label("Offerings from Beyond the Night", bold=True))
+                self.add_widget(self.label(
+                    "Gifts from other worlds. They await your acceptance."
+                ))
+                if not held:
+                    self.add_widget(self.label(
+                        "This slot doesn't receive any items that can be held as offerings."
+                    ))
+                    return
+                for name, (count, accepted) in held:
+                    text = name
+                    if name in CURRENCY_BUNDLES:
+                        text += f" ({CURRENCY_BUNDLES[name][1]:,} runes)"
+                    text += f": {count} held" + (f", {accepted} accepted" if accepted else "")
+                    full = accepted >= count
+                    self.row(
+                        self.label(text),
+                        button("Accept 1", functools.partial(self.act, functools.partial(
+                            ctx.accept_offering, name, 1)), disabled=full),
+                        button("All", functools.partial(self.act, functools.partial(
+                            ctx.accept_offering, name, None)), disabled=full),
+                    )
+                if status:
+                    def cancel() -> str:
+                        ctx.offering_queue.clear()
+                        return "Cancelled every accepted offering that hadn't arrived yet."
+
+                    self.row(self.label(status, italic=True),
+                             button("Cancel", lambda: self.act(cancel)))
+
         class NightreignManager(GameManager):
             logging_pairs = [("Client", "Archipelago")]
             base_title = "Archipelago Nightreign Client"
@@ -476,13 +594,30 @@ class NightreignContext(CommonContext):
                 unlocks.add_widget(scrolled(self.goal_section, self.characters_section,
                                             self.wins_section))
                 self.add_client_tab("Unlocks", unlocks)
+                # Added once a slot with otherworld_offerings on connects - see refresh_offerings.
+                self.offerings = None
+                self.offerings_tab = None
                 self._last_unlocks = ()  # never equal to a real state, so the first tick renders
                 Clock.schedule_interval(self.refresh_unlocks, 1)
                 return container
 
+            def refresh_offerings(self) -> None:
+                # slot_data only arrives on connect, after build(), so the tab can't be decided
+                # up front - shown only while the connected slot has otherworld_offerings on.
+                wanted = ctx.slot is not None and ctx.otherworld_offerings
+                if wanted and self.offerings_tab is None:
+                    self.offerings = OfferingsTab()
+                    self.offerings_tab = self.add_client_tab("Offerings", scrolled(self.offerings))
+                elif not wanted and self.offerings_tab is not None:
+                    self.remove_client_tab(self.offerings_tab)
+                    self.offerings = self.offerings_tab = None
+                if self.offerings is not None:
+                    self.offerings.refresh()
+
             def refresh_unlocks(self, _dt) -> None:
                 # Only rebuilt on change - received items, checked locations and slot_data all land
                 # asynchronously, so polling once a second is simpler than hooking every path.
+                self.refresh_offerings()
                 state = None if ctx.slot is None else ctx.tracker_state()
                 if state == self._last_unlocks:
                     return
@@ -554,6 +689,9 @@ class NightreignContext(CommonContext):
             if self.slot_data.get("starting_murk", 0):
                 self.currency_items.add("Murk")
             self.status_traps = bool(self.slot_data.get("status_traps", False))
+            self.otherworld_offerings = bool(self.slot_data.get("otherworld_offerings", False))
+            # Accepted offerings are per-session, never carried over to another slot.
+            self.offering_queue.clear()
             self.everdark_nightlords = set(self.slot_data.get("everdark_nightlords") or [])
             # Seeds generated before these keys existed fall back to every boss/character.
             self.included_nightlords = list(
@@ -1005,7 +1143,7 @@ class NightreignContext(CommonContext):
     ) -> None:
         if self.item_drop_writer is None:
             return
-        pending = self._pending_drop_keys(item_name, delivered_keys)
+        pending = self._accepted(item_name, self._pending_drop_keys(item_name, delivered_keys))
         if not pending:
             return
         loop = asyncio.get_running_loop()
@@ -1016,6 +1154,7 @@ class NightreignContext(CommonContext):
             )
             if ok:
                 delivered_keys.add((index, player))
+                self._mark_offering_delivered(item_name)
                 self._append_event({
                     "timestamp": datetime.now(timezone.utc).isoformat(),
                     "type": event_type,
@@ -1051,6 +1190,72 @@ class NightreignContext(CommonContext):
             "Randomized Talisman", self._roll_talisman_drop, self._delivered_talisman_keys,
             "talisman_drop", "randomized talisman", "Talisman received"
         )
+
+    # --- Otherworld Offerings (see offerings.py) ---
+    # Off unless otherworld_offerings is on. Held offerings are just items still pending - the
+    # delivery paths above and below only let through what the player has accepted.
+
+    def _accepted(self, item_name: str, pending: set):
+        """`pending` cut down to what's been accepted when `item_name` is held as an offering,
+        else `pending` unchanged."""
+        if self.otherworld_offerings and item_name in OFFERING_ITEMS:
+            return self.offering_queue.take(item_name, pending)
+        return pending
+
+    def _mark_offering_delivered(self, item_name: str) -> None:
+        if self.otherworld_offerings and item_name in OFFERING_ITEMS:
+            self.offering_queue.delivered(item_name)
+
+    def offerings_held(self) -> dict:
+        """Item name -> (held, accepted) for every offering this slot receives, in OFFERING_ITEMS
+        order."""
+        delivered = {}
+        if self.randomize_weapons:
+            delivered["Randomized Weapon"] = self._delivered_weapon_keys
+        if self.randomize_talismans:
+            delivered["Randomized Talisman"] = self._delivered_talisman_keys
+        if "Runes" in self.currency_items:
+            for bundle in OFFERING_RUNES:
+                delivered[bundle] = self._delivered_currency_keys["Runes"]
+        return {
+            name: (len(self._pending_drop_keys(name, delivered[name])),
+                   self.offering_queue.queued(name))
+            for name in OFFERING_ITEMS if name in delivered
+        }
+
+    def accept_offering(self, item_name: str, count: Optional[int]) -> str:
+        """Accepts `count` (None = every held copy) of `item_name` and returns a line describing
+        the result, for /accept and the Offerings tab."""
+        if not self.otherworld_offerings:
+            return "Otherworld Offerings are off for this slot."
+        held = self.offerings_held()
+        if item_name not in held:
+            return f"This slot doesn't receive {item_name}s."
+        count_held, _accepted = held[item_name]
+        added = self.offering_queue.request(
+            item_name, count_held if count is None else count, count_held
+        )
+        if not added:
+            return f"No more {item_name}s held to accept."
+        logger.info("Accepted %s %s offering(s).", added, item_name)
+        return (f"Accepted {added} {item_name}{'s' if added != 1 else ''}. "
+                f"{self.offering_status()}")
+
+    def offering_status(self) -> str:
+        """Why accepted offerings haven't arrived yet, or "" with none accepted."""
+        if not self.offering_queue.any_queued():
+            return ""
+        if not self.reader.connected:
+            return "Waiting for the game."
+        if self._hub_exit_time is None:
+            return "Arrives in your next Expedition."
+        if time.monotonic() - self._hub_exit_time < EXPEDITION_ENTRY_SETTLE_SECONDS:
+            return "Arrives once the Expedition has started."
+        if self._offering_run_locked:
+            return "Waiting - this run's boss or character isn't unlocked yet."
+        if self._offering_flying:
+            return "Weapons and talismans land once you're on the ground."
+        return "Arriving now."
 
     # --- Currency grant write path (Murk, Runes, Sovereign Sigils) ---
     # Off unless the matching receive_* option is on. Unlike weapons/talismans, nothing is rolled
@@ -1105,7 +1310,7 @@ class NightreignContext(CommonContext):
         pending = {
             key: bundle
             for bundle in currency_bundle_names(currency)
-            for key in self._pending_drop_keys(bundle, delivered_keys)
+            for key in self._accepted(bundle, self._pending_drop_keys(bundle, delivered_keys))
         }
         if not pending:
             return
@@ -1123,6 +1328,8 @@ class NightreignContext(CommonContext):
             logger.warning("%s grant skipped - game not ready, will retry.", currency)
             return
         delivered_keys.update(pending)
+        for bundle in pending.values():
+            self._mark_offering_delivered(bundle)
         after = self.reader.read_player_data_uint(counter_offset)
         self._append_event({
             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -1600,7 +1807,8 @@ class NightreignContext(CommonContext):
                     # Traps aren't rewards, so unlike drops below they still go off on a locked run.
                     if self.status_traps:
                         self._maybe_start_trap()
-                    if self._current_run_is_locked():
+                    self._offering_run_locked = self._current_run_is_locked()
+                    if self._offering_run_locked:
                         # Don't spend an earned weapon/talisman drop on a run that's on a
                         # not-yet-unlocked boss/character - _handle_win would refuse to send a check
                         # for this same run's win (locked_boss_win_skipped/
@@ -1628,7 +1836,8 @@ class NightreignContext(CommonContext):
                             self.reader.read_current_animation(self._worldchrman_slot)
                             if self._worldchrman_slot is not None else None
                         )
-                        if animation is not None and not is_flying_animation(animation):
+                        self._offering_flying = animation is None or is_flying_animation(animation)
+                        if not self._offering_flying:
                             if self.randomize_weapons:
                                 await self._deliver_pending_weapons()
                             if self.randomize_talismans:

@@ -544,6 +544,7 @@ class NightreignWorld(World):
             "receive_murk": bool(self.options.receive_murk),
             "receive_runes": bool(self.options.receive_runes),
             "receive_sovereign_sigils": bool(self.options.receive_sovereign_sigils),
+            "otherworld_offerings": bool(self.options.otherworld_offerings),
             # Only tells the client whether to resolve the SpEffect write path - which trap items
             # were actually placed comes through as ordinary received items.
             "status_traps": bool(self.options.trap_percentage.value and self.options.enabled_traps.value),

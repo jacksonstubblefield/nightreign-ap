@@ -232,10 +232,8 @@ class ReceiveSovereignSigils(Toggle):
 
 
 class OtherworldOfferings(Toggle):
-    """If enabled, received weapons, talismans and runes are held as offerings - gifts sent from
-    other worlds to aid you against the Night - instead of arriving automatically. Accept them
-    whenever you need them from the client's Offerings tab or with /accept, e.g. to recover after
-    a death or to save them for a hard Nightlord instead of spending them on an easy run.
+    """If enabled, received weapons, talismans and runes are held as offerings instead of arriving automatically. 
+    Accept them whenever you need them from the client's Offerings tab or with /accept.
     """
 
     display_name = "Otherworld Offerings"
@@ -244,9 +242,6 @@ class OtherworldOfferings(Toggle):
 
 class TrapPercentage(Range):
     """Percent of filler items replaced with traps. 0 turns traps off.
-
-    A trap goes off during your next Expedition (not in the Roundtable Hold), once you've landed,
-    and inflicts its status effect on you. Several traps received at once go off one at a time.
     """
 
     display_name = "Trap Percentage"

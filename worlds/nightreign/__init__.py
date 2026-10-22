@@ -4,8 +4,8 @@ from worlds.AutoWorld import World, WebWorld
 from worlds.LauncherComponents import Component, Type, components, icon_paths, launch_subprocess
 
 from .game_data import (ACCESS_CHARACTERS, ACCESS_NIGHTLORDS, CHARACTERS, CURRENCY_BUNDLES,
-                        CURRENCY_COUNTER_OFFSETS, EVERDARK_NIGHTLORDS, NIGHTLORD_BONUS_INDICES,
-                        NIGHTLORDS, bundles_for_amount, currency_bundle_names,
+                        CURRENCY_COUNTER_OFFSETS, EVERDARK_NIGHTLORDS, NIGHTLORDS, bonus_indices,
+                        bundles_for_amount, currency_bundle_names,
                         starting_free_characters,
                         starting_free_everdark_nightlords, starting_free_nightlords,
                         win_count_threshold_list)
@@ -70,11 +70,11 @@ class NightreignWorld(World):
     cumulative number of Expeditions this seed (see game_data.win_count_threshold_list and
     win_count_up_to) - independent of which boss/character was defeated, never gated, and never
     required for the goal. Two more check families add density within and across a Nightlord's own
-    Expeditions specifically (unlike win_count_checks, which is global), never gated, never
-    required for the goal, and universal - always generated, no option to disable "for now": a
-    Nightlord's first valid defeat always sends 4 extra bonus checks alongside the existing
-    "Defeat X" check (5 total, all at once - not a cumulative kill counter, repeat defeats award
-    nothing further here), and each Nightlord always has exactly one Night 1 Clear and one Night 2
+    Expeditions specifically (unlike win_count_checks, which is global), never gated beyond their
+    Nightlord's own rule and never required for the goal: a Nightlord's first valid defeat sends
+    checks_per_boss checks in total (default 5, all at once - "Defeat X" plus checks_per_boss - 1
+    bonus checks; not a cumulative kill counter, repeat defeats award nothing further here), and
+    with night_checks on (the default) each Nightlord has exactly one Night 1 Clear and one Night 2
     Clear location, detected via the day/night phase transition rather than the win itself (Night 1
     on defeating the mid-run boss, Night 2 on a successful transition out of the Nightlord fight
     itself). A third family, weak_reward_checks/strong_reward_checks (cumulative counters, fixed at
@@ -82,7 +82,7 @@ class NightreignWorld(World):
     client.py but its Options.py toggles are currently commented out - live-confirmed to also fire
     on any weapon pickup at all, including this world's own randomized weapon drops, so there's no
     way to enable it right now (see Options.py for the known-issue writeup, still there next to the
-    commented-out classes). The two universal families mirror check_style and cover
+    commented-out classes). The bonus and night families mirror check_style and cover
     Everdark Sovereigns the same way the base locations do.
     """
 
@@ -223,7 +223,7 @@ class NightreignWorld(World):
         # REWARD_CHECK_THRESHOLDS comment). Left as real attributes (rather than deleted) so
         # create_regions()/fill_slot_data() below don't need their own special-casing, and so
         # restoring the option later is just restoring these two lines. Night 1/Night 2 Clear and
-        # the Nightlord Bonus checks have no threshold list at all - they're universal, not opt-in.
+        # the Nightlord Bonus checks have no threshold list at all - see checks_per_boss/night_checks.
         self.weak_reward_thresholds = []
         self.strong_reward_thresholds = []
 
@@ -283,9 +283,9 @@ class NightreignWorld(World):
         # Extra check-density families - each expands `locations`/`everdark_locations` (already
         # filtered per-player above), reusing the exact same nightlord/character/everdark
         # association those pairs already carry so the access_rule built below stays identical to
-        # the base "Defeat X" location's. Nightlord Bonus (4 extra locations alongside "Defeat X")
-        # and Night 1/Night 2 Clear (exactly one location each) are universal - always generated,
-        # no option gates them. Weak/Strong Reward stay opt-in, capped at a fixed 1-5
+        # the base "Defeat X" location's. Nightlord Bonus (checks_per_boss - 1 extra locations
+        # alongside "Defeat X") and Night 1/Night 2 Clear (exactly one location each, only with
+        # night_checks on) are on by default. Weak/Strong Reward stay opt-in, capped at a fixed 1-5
         # (self.weak_reward_thresholds/strong_reward_thresholds are [] when their toggle is off -
         # see generate_early()).
         def _expand_thresholds(base_list, name_fn, thresholds, everdark) -> list:
@@ -301,16 +301,19 @@ class NightreignWorld(World):
                 for _name, nightlord, character in base_list
             ]
 
+        slot_bonus_indices = bonus_indices(self.options.checks_per_boss.value)
         kill_bonus_locations = _expand_thresholds(
-            locations, location_name_kill_bonus, NIGHTLORD_BONUS_INDICES, False
+            locations, location_name_kill_bonus, slot_bonus_indices, False
         )
         kill_bonus_everdark_locations = _expand_thresholds(
-            everdark_locations, location_name_kill_bonus, NIGHTLORD_BONUS_INDICES, True
+            everdark_locations, location_name_kill_bonus, slot_bonus_indices, True
         )
-        night1_locations = _expand_single(locations, location_name_night1, False)
-        night1_everdark_locations = _expand_single(everdark_locations, location_name_night1, True)
-        night2_locations = _expand_single(locations, location_name_night2, False)
-        night2_everdark_locations = _expand_single(everdark_locations, location_name_night2, True)
+        night_bases = locations if self.options.night_checks else []
+        night_everdark_bases = everdark_locations if self.options.night_checks else []
+        night1_locations = _expand_single(night_bases, location_name_night1, False)
+        night1_everdark_locations = _expand_single(night_everdark_bases, location_name_night1, True)
+        night2_locations = _expand_single(night_bases, location_name_night2, False)
+        night2_everdark_locations = _expand_single(night_everdark_bases, location_name_night2, True)
         weak_reward_locations = _expand_thresholds(
             locations, location_name_weak_reward, self.weak_reward_thresholds, False
         )
@@ -549,6 +552,8 @@ class NightreignWorld(World):
             # were actually placed comes through as ordinary received items.
             "status_traps": bool(self.options.trap_percentage.value and self.options.enabled_traps.value),
             "starting_murk": self.options.starting_murk.value,
+            "checks_per_boss": self.options.checks_per_boss.value,
+            "night_checks": bool(self.options.night_checks),
             "win_count_checks": bool(self.options.win_count_checks),
             "win_count_thresholds": self.win_count_thresholds,
             # weak_reward_checks/strong_reward_checks: hardcoded False - the options are commented

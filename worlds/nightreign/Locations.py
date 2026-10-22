@@ -5,6 +5,12 @@ from BaseClasses import Location
 from .game_data import (CHARACTERS, EVERDARK_NIGHTLORDS, NIGHTLORD_BONUS_INDICES, NIGHTLORDS,
                         REWARD_CHECK_THRESHOLDS, WIN_COUNT_THRESHOLDS)
 
+# The bonus indices that existed before checks_per_boss was configurable - their tables keep their
+# original spot in the id layout below; the rest of NIGHTLORD_BONUS_INDICES (6-10) is appended at
+# the very end so no older seed's ids shift.
+_ORIGINAL_BONUS_INDICES = (2, 3, 4, 5)
+_EXTENDED_BONUS_INDICES = tuple(i for i in NIGHTLORD_BONUS_INDICES if i not in _ORIGINAL_BONUS_INDICES)
+
 
 class NightreignLocation(Location):
     """NightreignLocation is a subclass of Location that represents a location in the Nightreign game.
@@ -89,17 +95,17 @@ def location_name_win_count(count: int) -> str:
 def location_name_kill_bonus(
     nightlord: str, index: int, character: Optional[str] = None, everdark: bool = False
 ) -> str:
-    """Generates the location name for one of the 4 bonus checks (see game_data.
-    NIGHTLORD_BONUS_INDICES) that fire together, alongside the existing "Defeat X" location, on a
+    """Generates the location name for one of the bonus checks (see game_data.
+    NIGHTLORD_BONUS_INDICES/checks_per_boss) that fire together, alongside the existing "Defeat X" location, on a
     Nightlord's first valid defeat - NOT a cumulative kill counter (index has nothing to do with
-    how many times the boss has been killed; it just distinguishes these 4 locations from each
+    how many times the boss has been killed; it just distinguishes these locations from each
     other and from the pre-existing "Defeat X"/index-1 location). Mirrors check_style'
     per-character/boss-only shape and covers Everdark Sovereigns the same way location_name_everdark
     does.
 
     Args:
         nightlord (str): Nightlord name.
-        index (int): which bonus check this is (2-5, per NIGHTLORD_BONUS_INDICES) - purely a
+        index (int): which bonus check this is (2-10, per NIGHTLORD_BONUS_INDICES) - purely a
             distinguishing label, not a count of anything.
         character (str, optional): Nightreign character name, in BossWithCharacter mode.
         everdark (bool): whether this is the Nightlord's Everdark Sovereign form.
@@ -119,7 +125,7 @@ def location_name_night1(
     """Generates the location name for the (single, non-cumulative) Night 1 Clear check - fires on
     defeating the Nightlord's mid-run Night 1 boss, detected via the day/night phase transition
     (see memory_reader.DAY_NIGHT_PHASE_OFFSET), independent of whether the Nightlord itself is
-    later defeated. Universal - exactly one per Nightlord (or Nightlord x character), no toggle.
+    later defeated. Exactly one per Nightlord (or Nightlord x character), when night_checks is on.
 
     Args:
         nightlord (str): Nightlord name.
@@ -141,7 +147,7 @@ def location_name_night2(
     """Generates the location name for the (single, non-cumulative) Night 2 Clear check - fires on
     a successful transition out of the Nightlord's Night 2 fight (see game_data.DAY_PHASE_DAY_3),
     independent of the Nightlord Bonus checks above (a different detection mechanism for a related
-    event). Universal - exactly one per Nightlord (or Nightlord x character), no toggle.
+    event). Exactly one per Nightlord (or Nightlord x character), when night_checks is on.
 
     Args:
         nightlord (str): Nightlord name.
@@ -283,17 +289,17 @@ def _append_single(name_fn, characters: tuple, nightlords: list, everdark: bool 
 
 
 _kill_bonus_per_character_table = _append_family(
-    location_name_kill_bonus, tuple(CHARACTERS), NIGHTLORDS, NIGHTLORD_BONUS_INDICES
+    location_name_kill_bonus, tuple(CHARACTERS), NIGHTLORDS, _ORIGINAL_BONUS_INDICES
 )
 _kill_bonus_boss_only_table = _append_family(
-    location_name_kill_bonus, (None,), NIGHTLORDS, NIGHTLORD_BONUS_INDICES
+    location_name_kill_bonus, (None,), NIGHTLORDS, _ORIGINAL_BONUS_INDICES
 )
 _kill_bonus_everdark_per_character_table = _append_family(
-    location_name_kill_bonus, tuple(CHARACTERS), EVERDARK_NIGHTLORDS, NIGHTLORD_BONUS_INDICES,
+    location_name_kill_bonus, tuple(CHARACTERS), EVERDARK_NIGHTLORDS, _ORIGINAL_BONUS_INDICES,
     everdark=True,
 )
 _kill_bonus_everdark_boss_only_table = _append_family(
-    location_name_kill_bonus, (None,), EVERDARK_NIGHTLORDS, NIGHTLORD_BONUS_INDICES, everdark=True
+    location_name_kill_bonus, (None,), EVERDARK_NIGHTLORDS, _ORIGINAL_BONUS_INDICES, everdark=True
 )
 
 _night1_per_character_table = _append_single(location_name_night1, tuple(CHARACTERS), NIGHTLORDS)
@@ -340,6 +346,22 @@ _strong_reward_everdark_per_character_table = _append_family(
 )
 _strong_reward_everdark_boss_only_table = _append_family(
     location_name_strong_reward, (None,), EVERDARK_NIGHTLORDS, REWARD_CHECK_THRESHOLDS, everdark=True
+)
+
+# Bonus indices 6-10 (checks_per_boss above the old fixed 5) - appended last, see
+# _ORIGINAL_BONUS_INDICES.
+_kill_bonus_extended_per_character_table = _append_family(
+    location_name_kill_bonus, tuple(CHARACTERS), NIGHTLORDS, _EXTENDED_BONUS_INDICES
+)
+_kill_bonus_extended_boss_only_table = _append_family(
+    location_name_kill_bonus, (None,), NIGHTLORDS, _EXTENDED_BONUS_INDICES
+)
+_kill_bonus_extended_everdark_per_character_table = _append_family(
+    location_name_kill_bonus, tuple(CHARACTERS), EVERDARK_NIGHTLORDS, _EXTENDED_BONUS_INDICES,
+    everdark=True,
+)
+_kill_bonus_extended_everdark_boss_only_table = _append_family(
+    location_name_kill_bonus, (None,), EVERDARK_NIGHTLORDS, _EXTENDED_BONUS_INDICES, everdark=True
 )
 
 location_table = {}

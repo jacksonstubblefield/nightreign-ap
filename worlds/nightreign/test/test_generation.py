@@ -585,8 +585,8 @@ class NightreignRandomStartingBossTest(WorldTestBase):
         self._roll(frozenset({"Gaping Jaw", "Everdark Augur"}))
 
 
-# --- Nightlord Bonus checks (universal, no toggle) ---
-# Adds 4 bonus locations (see game_data.NIGHTLORD_BONUS_INDICES) alongside each existing "Defeat X"
+# --- Nightlord Bonus checks (checks_per_boss, default 5) ---
+# By default adds 4 bonus locations (see game_data.NIGHTLORD_BONUS_INDICES) alongside each existing "Defeat X"
 # location (index 1, unchanged), built with the exact same access_rule as their base Nightlord's
 # "Defeat X" location (see create_regions()'s _expand_thresholds/_make_location) - NOT a cumulative
 # kill counter (client.py's _handle_win sends all 4 together on the first valid win; that
@@ -598,11 +598,15 @@ class NightreignBonusChecksAlwaysAddedTest(WorldTestBase):
     options = {"included_nightlords": frozenset({"Tricephalos"}), "goal": "all_bosses_all_characters"}
 
     def test_adds_4_bonus_locations(self) -> None:
+        # checks_per_boss defaults to 5: "Defeat X" plus bonus indices 2-5, none of 6-10.
         locations = self.multiworld.get_locations(self.world.player)
         names = {loc.name for loc in locations}
         self.assertIn(location_name_boss_only("Tricephalos"), names)  # index 1, unchanged
         for index in NIGHTLORD_BONUS_INDICES:
-            self.assertIn(location_name_kill_bonus("Tricephalos", index), names)
+            if index <= 5:
+                self.assertIn(location_name_kill_bonus("Tricephalos", index), names)
+            else:
+                self.assertNotIn(location_name_kill_bonus("Tricephalos", index), names)
 
     def test_bonus_locations_excluded_from_goal_groups(self) -> None:
         all_goal_ids = {
@@ -635,7 +639,66 @@ class NightreignBonusChecksShareAccessRuleTest(WorldTestBase):
         self.assertTrue(self.can_reach_location(location))
 
 
-# --- Night 1 / Night 2 Clear checks (universal, no toggle) ---
+# --- checks_per_boss / night_checks ---
+
+def _tricephalos_check_names(test: WorldTestBase) -> set:
+    return {loc.name for loc in test.multiworld.get_locations(test.world.player)}
+
+
+class NightreignChecksPerBossMaxTest(WorldTestBase):
+    game = "Elden Ring Nightreign"
+    options = {"included_nightlords": frozenset({"Tricephalos"}), "goal": "all_bosses",
+               "checks_per_boss": 10}
+
+    def test_adds_all_bonus_locations(self) -> None:
+        names = _tricephalos_check_names(self)
+        for index in NIGHTLORD_BONUS_INDICES:
+            self.assertIn(location_name_kill_bonus("Tricephalos", index), names)
+
+
+class NightreignChecksPerBossMinTest(WorldTestBase):
+    game = "Elden Ring Nightreign"
+    options = {"included_nightlords": frozenset({"Tricephalos"}), "goal": "all_bosses",
+               "checks_per_boss": 1}
+
+    def test_only_defeat_location(self) -> None:
+        names = _tricephalos_check_names(self)
+        self.assertIn(location_name_boss_only("Tricephalos"), names)
+        for index in NIGHTLORD_BONUS_INDICES:
+            self.assertNotIn(location_name_kill_bonus("Tricephalos", index), names)
+
+    def test_slot_data(self) -> None:
+        self.assertEqual(self.world.fill_slot_data()["checks_per_boss"], 1)
+
+
+class NightreignChecksPerBossPerCharacterTest(WorldTestBase):
+    game = "Elden Ring Nightreign"
+    options = {"included_nightlords": frozenset({"Tricephalos"}), "goal": "all_bosses",
+               "check_style": "boss_per_character",
+               "included_characters": frozenset({"Wylder"}), "checks_per_boss": 7}
+
+    def test_bonus_locations_per_character(self) -> None:
+        names = _tricephalos_check_names(self)
+        for index in range(2, 8):
+            self.assertIn(location_name_kill_bonus("Tricephalos", index, "Wylder"), names)
+        self.assertNotIn(location_name_kill_bonus("Tricephalos", 8, "Wylder"), names)
+
+
+class NightreignNightChecksOffTest(WorldTestBase):
+    game = "Elden Ring Nightreign"
+    options = {"included_nightlords": frozenset({"Tricephalos", "Everdark Tricephalos"}),
+               "goal": "all_bosses", "night_checks": False}
+
+    def test_no_night_locations(self) -> None:
+        names = _tricephalos_check_names(self)
+        self.assertFalse([name for name in names if name.startswith("Clear Night ")])
+        self.assertIn(location_name_boss_only("Tricephalos"), names)
+
+    def test_slot_data(self) -> None:
+        self.assertFalse(self.world.fill_slot_data()["night_checks"])
+
+
+# --- Night 1 / Night 2 Clear checks (night_checks, on by default) ---
 # Exactly one location each per Nightlord (or Nightlord x character), driven client-side by the
 # day/night phase transition - not a cumulative counter, so there's no threshold/up_to dimension to
 # test here at all, just that the single location exists, is reachable under the same rule as the

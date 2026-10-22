@@ -8,8 +8,9 @@ from dataclasses import dataclass
 from Options import Choice, OptionGroup, OptionSet, PerGameCommonOptions, Range, Toggle
 
 # Local Imports
-from .game_data import (ALL_NIGHTLORD_ENTRIES, CHARACTERS, EVERDARK_NIGHTLORDS, NIGHTLORDS,
-                        STATUS_TRAPS, WIN_COUNT_UP_TO_MAX, WIN_COUNT_UP_TO_MIN)
+from .game_data import (ALL_NIGHTLORD_ENTRIES, CHARACTERS, CHECKS_PER_BOSS_DEFAULT,
+                        CHECKS_PER_BOSS_MAX, EVERDARK_NIGHTLORDS, NIGHTLORDS, STATUS_TRAPS,
+                        WIN_COUNT_UP_TO_MAX, WIN_COUNT_UP_TO_MIN)
 
 
 class IncludedCharacters(OptionSet):
@@ -39,6 +40,26 @@ class CheckStyle(Choice):
     option_boss = 0
     option_boss_per_character = 1
     default = 0
+
+
+class ChecksPerBoss(Range):
+    """How many checks defeating a boss sends, all at once on the first defeat (per character, with
+    Check Style set to Boss per Character).
+    """
+
+    display_name = "Checks per Boss"
+    range_start = 1
+    range_end = CHECKS_PER_BOSS_MAX
+    default = CHECKS_PER_BOSS_DEFAULT
+
+
+class NightChecks(Toggle):
+    """If enabled, each boss also has a check for clearing Night 1 and one for clearing Night 2 of
+    an expedition against it (per character, with Check Style set to Boss per Character).
+    """
+
+    display_name = "Night Checks"
+    default = 1
 
 
 class StartingBoss(Choice):
@@ -355,6 +376,8 @@ option_groups = [
         GateBossAccess,
         UnlockAllBossesInGame,
         CheckStyle,
+        ChecksPerBoss,
+        NightChecks,
     ]),
     OptionGroup("Characters", [
         IncludedCharacters,
@@ -398,6 +421,8 @@ class NightreignOptions(PerGameCommonOptions):
     included_characters: IncludedCharacters
     included_nightlords: IncludedNightlords
     check_style: CheckStyle
+    checks_per_boss: ChecksPerBoss
+    night_checks: NightChecks
     starting_boss: StartingBoss
     gate_boss_access: GateBossAccess
     unlock_all_bosses_in_game: UnlockAllBossesInGame

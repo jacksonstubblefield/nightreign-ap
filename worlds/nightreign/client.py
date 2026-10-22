@@ -64,12 +64,12 @@ boss/character is even in this slot's included_nightlords/included_characters, s
 to a specific boss or character in the first place.
 
 Three more per-Nightlord check families add density within a single Expedition rather than only at
-its very end. Two are universal, no option gates them: every valid defeat always sends 4 extra
-bonus locations (game_data.NIGHTLORD_BONUS_INDICES) together with _handle_win's own "Defeat X" send
+its very end. Every valid defeat sends checks_per_boss - 1 extra bonus locations (slot_data's
+checks_per_boss, game_data.bonus_indices) together with _handle_win's own "Defeat X" send
 - NOT a cumulative counter; repeat defeats of the same boss/character/everdark award nothing
 further here (self.checked_location_ids already prevents re-sending, the same as the base "Defeat
-X" location). Night 1/Night 2 Clear are also universal, but each is a single non-cumulative
-location per boss/character/everdark, sent via _credit_single_check once (never re-sent, same
+X" location). Night 1/Night 2 Clear (slot_data's night_checks, on by default) are each a single
+non-cumulative location per boss/character/everdark, sent via _credit_single_check once (never re-sent, same
 dedup): Night 1 fires on the day/night phase's 1->2 transition (the mid-run boss defeated), Night 2
 fires on the 3->4 transition (the Night 2 boss defeated, entering the Day 3 Nightlord arena - NOT
 merely reaching the Night 2 fight, which is the 2->3 transition) - see game_data.py's DAY_PHASE_*
@@ -109,8 +109,8 @@ from .game_data import (ACCESS_CHARACTERS, ACCESS_ITEM_EVENT_FLAGS, ACCESS_NIGHT
                         CHARACTER_ACCESS_EVENT_FLAGS, CURRENCY_BUNDLES,
                         CURRENCY_COUNTER_OFFSETS, CURRENCY_GRANT_MAX,
                         DAY_PHASE_DAY_2, DAY_PHASE_DAY_3, DAY_PHASE_NIGHT_1, DAY_PHASE_NIGHT_2, EVERDARK_NIGHTLORDS,
-                        NIGHTLORD_BONUS_INDICES, STATUS_TRAPS, TRAP_APPLY_INTERVAL,
-                        currency_bundle_names, is_flying_animation,
+                        CHECKS_PER_BOSS_DEFAULT, STATUS_TRAPS, TRAP_APPLY_INTERVAL,
+                        bonus_indices, currency_bundle_names, is_flying_animation,
                         is_nightlord_kill_tick, starting_free_characters,
                         starting_free_everdark_nightlords, starting_free_nightlords)
 from .death_link import DEATH_LINK_MODES, DeathLinkDetector
@@ -366,6 +366,8 @@ class NightreignContext(CommonContext):
         self.freed_everdark_nightlords = set()
         self.freed_characters = set()
         self.per_character_checks = False
+        self.checks_per_boss = CHECKS_PER_BOSS_DEFAULT
+        self.night_checks = True
         self.win_count_checks = False
         self.win_count_thresholds = []
         self.win_count = 0
@@ -719,6 +721,11 @@ class NightreignContext(CommonContext):
             self.per_character_checks = (
                 self.slot_data.get("check_style", "boss") == "boss_per_character"
             )
+            # Defaults match seeds from before these were options (fixed 5 checks, nights always on).
+            self.checks_per_boss = int(
+                self.slot_data.get("checks_per_boss", CHECKS_PER_BOSS_DEFAULT)
+            )
+            self.night_checks = bool(self.slot_data.get("night_checks", True))
             self.win_count_checks = bool(self.slot_data.get("win_count_checks", False))
             # Already capped at this slot's win_count_up_to by __init__.py's generate_early() - a
             # threshold above that cap has no location in the pool at all.
@@ -1753,8 +1760,8 @@ class NightreignContext(CommonContext):
                 elif in_hub is False:
                     extra_check_timestamp = datetime.now(timezone.utc).isoformat()
 
-                    # Night 1/Night 2 Clear are universal (no toggle) - always read, unlike the
-                    # weak/strong reward reads below, which stay opt-in.
+                    # Night 1/Night 2 Clear - always read (cheap); _credit_night_phase_check itself
+                    # skips sending when night_checks is off.
                     day_phase = self.reader.read_day_phase()
                     if day_phase is not None:
                         if self._last_day_phase == DAY_PHASE_NIGHT_1 and day_phase == DAY_PHASE_DAY_2:
@@ -2061,8 +2068,10 @@ class NightreignContext(CommonContext):
         """Shared body for the Night 1/Night 2 Clear checks - each Nightlord/character/everdark
         combo has exactly one location (not a cumulative counter, unlike weak/strong reward above),
         sent via _credit_single_check once this slot has both a resolvable context
-        (_resolve_win_context) and access to it (_access_owned). Universal - always called, no
-        toggle gates this family (see game_data.py's DAY_PHASE_* constants)."""
+        (_resolve_win_context) and access to it (_access_owned). Does nothing with slot_data's
+        night_checks off (see game_data.py's DAY_PHASE_* constants)."""
+        if not self.night_checks:
+            return
         ctx = self._resolve_win_context()
         if ctx is None:
             return
@@ -2274,16 +2283,16 @@ class NightreignContext(CommonContext):
         })
         await self.check_locations([location_id])
 
-        # Universal, no toggle: sends the 4 bonus locations (game_data.NIGHTLORD_BONUS_INDICES)
-        # together with this same win, against the exact same boss/character/everdark combination
-        # this slot already earned that win against - reuses every gating check already passed
+        # Sends this slot's checks_per_boss - 1 bonus locations (game_data.bonus_indices) together
+        # with this same win, against the exact same boss/character/everdark combination this slot
+        # already earned that win against - reuses every gating check already passed
         # above, so no further access_owned check is needed here. NOT a cumulative counter: this
         # runs on every valid win, but self.checked_location_ids (below) already prevents a repeat
         # defeat of the same combination from re-sending anything, the same way the base
         # "Defeat X" location above never re-fires either.
         character_key = character_name if self.per_character_checks else None
         bonus_sent = []  # (location_id, name)
-        for index in NIGHTLORD_BONUS_INDICES:
+        for index in bonus_indices(self.checks_per_boss):
             bonus_name = location_name_kill_bonus(boss.name, index, character_key, is_everdark_win)
             bonus_id = location_name_to_id.get(bonus_name)
             if bonus_id is not None and bonus_id not in self.checked_location_ids:

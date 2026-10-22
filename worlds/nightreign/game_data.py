@@ -234,15 +234,22 @@ def win_count_threshold_list(up_to: int) -> list:
 
 
 # --- Nightlord bonus checks ---
-# A flat 5 checks per Nightlord (or per Nightlord x character, mirroring check_style),
-# all sent together on the FIRST valid defeat - NOT a cumulative kill counter (repeat kills of the
-# same Nightlord/character/Everdark combo award nothing further here, same as the existing
-# "Defeat X" location already doesn't re-fire). Index 1 is just that existing "Defeat X" location,
-# unchanged; indices 2-5 are new locations (see Locations.py's location_name_kill_bonus) sent
-# alongside it in the same check_locations call. Universal - always on, no option gates this (see
-# nightreign-roadmap memory for why: this and Night 1/Night 2 Clear below are meant to be baseline
-# check density for every seed, not opt-in extras).
-NIGHTLORD_BONUS_INDICES = (2, 3, 4, 5)
+# checks_per_boss (Options.py's ChecksPerBoss, 1-10, default 5) checks per Nightlord (or per
+# Nightlord x character, mirroring check_style), all sent together on the FIRST valid defeat - NOT
+# a cumulative kill counter (repeat kills of the same Nightlord/character/Everdark combo award
+# nothing further here, same as the existing "Defeat X" location already doesn't re-fire). Index 1
+# is just that existing "Defeat X" location, unchanged; indices 2..checks_per_boss are bonus
+# locations (see Locations.py's location_name_kill_bonus) sent alongside it in the same
+# check_locations call. NIGHTLORD_BONUS_INDICES is every index any slot can use (2-10); a given
+# slot only generates bonus_indices(checks_per_boss).
+CHECKS_PER_BOSS_MAX = 10
+CHECKS_PER_BOSS_DEFAULT = 5
+NIGHTLORD_BONUS_INDICES = tuple(range(2, CHECKS_PER_BOSS_MAX + 1))
+
+
+def bonus_indices(checks_per_boss: int) -> tuple:
+    """The bonus indices a slot with this checks_per_boss generates (empty at 1 - just "Defeat X")."""
+    return tuple(range(2, checks_per_boss + 1))
 
 
 # --- Day/night phase tracking (Night 1 / Night 2 clear checks) ---
@@ -254,8 +261,8 @@ NIGHTLORD_BONUS_INDICES = (2, 3, 4, 5)
 # arena (2->3). DAY_PHASE_DAY_3 live-confirmed 2026-10-04 across a Night Aspect and an Augur run:
 # 3->4 right after the Night 2 boss died, held at 4 through the whole Nightlord fight.
 # Each Nightlord (or Nightlord x character, mirroring check_style) gets exactly ONE
-# Night 1 Clear location and ONE Night 2 Clear location - not a cumulative counter, and not
-# optional, same "universal baseline" posture as the bonus checks above.
+# Night 1 Clear location and ONE Night 2 Clear location - not a cumulative counter. On by default;
+# Options.py's NightChecks turns the whole family off.
 DAY_PHASE_DAY_1 = 0
 DAY_PHASE_NIGHT_1 = 1
 DAY_PHASE_DAY_2 = 2

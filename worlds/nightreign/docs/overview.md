@@ -14,10 +14,14 @@ Configurable via the `goal` option:
 - **All Bosses**: defeat every Nightlord you opted into at least once, with any
   one of your opted-into characters - no need to clear every character x Nightlord
   combination.
-- **Random**: at generation time, a random number of specific "Defeat X as Y" objectives
-  (bounded by `goal_random_min`/`goal_random_max`) are chosen from your included characters
-  and Nightlords as the required set. Requires `check_style` to be
-  `boss_per_character`.
+- **Random**: at generation time, a random number of objectives (bounded by
+  `goal_random_min`/`goal_random_max`) are chosen as the required set. With `check_style` set to
+  `boss_per_character`, each objective is a specific "Defeat X as Y" drawn from your included
+  characters and Nightlords; in `boss` mode, each is just "Defeat X" for one of your included
+  Nightlords.
+
+For every goal except Night Aspect, "Nightlords you opted into" means everything in
+`included_nightlords`, and each Everdark Sovereign you include there counts as its own boss.
 
 Whichever goal is picked, every included character x Nightlord combination still generates as
 a location check - the goal option only changes which of them are required to finish.

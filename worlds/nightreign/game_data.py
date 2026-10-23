@@ -199,6 +199,9 @@ def starting_free_characters(starting_character: str) -> list:
 # them - see client.py's _open_run_state).
 WIN_COUNT_UP_TO_MIN = 10
 WIN_COUNT_UP_TO_MAX = 50
+# Win-count checks above this many wins are excluded from progression, so other players are never
+# stuck waiting on a player to grind the same unlocked boss/character for 10+ wins.
+WIN_COUNT_PROGRESSION_MAX = 5
 
 # The full, fixed universe of threshold values any win_count_up_to choice in [WIN_COUNT_UP_TO_MIN,
 # WIN_COUNT_UP_TO_MAX] could ever produce via win_count_threshold_list() below - 1, 2, 3, 5, 7, then

@@ -13,7 +13,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Optional
 
-from .game_data import CHARACTERS, EVERDARK_NIGHTLORDS, NIGHTLORD_BONUS_INDICES, NIGHTLORDS
+from .game_data import (ALL_NIGHTLORD_ENTRIES, CHARACTERS, EVERDARK_NIGHTLORDS,
+                        NIGHTLORD_BONUS_INDICES, NIGHTLORDS)
 from .Locations import (location_name, location_name_boss_only, location_name_everdark,
                         location_name_everdark_boss_only, location_name_kill_bonus,
                         location_name_night1, location_name_night2, location_name_to_id,
@@ -124,11 +125,16 @@ def win_count_rows(slot_locations: set, sent: set, thresholds: list) -> list[Tra
     return rows
 
 
-# Location id -> (nightlord, character or None) for every base Defeat check - the only locations
-# goal_groups can contain (see __init__.py's create_regions()).
+# Location id -> (nightlord entry, character or None) for every Defeat check - the only locations
+# goal_groups can contain (see __init__.py's create_regions()). Everdark checks map to their
+# "Everdark X" entry, so f"{entry} Access" is the right Access item name for both kinds.
 _DEFEAT_SUBJECTS = {
     **{location_name_to_id[location_name_boss_only(n)]: (n, None) for n in NIGHTLORDS},
     **{location_name_to_id[location_name(c, n)]: (n, c) for n in NIGHTLORDS for c in CHARACTERS},
+    **{location_name_to_id[location_name_everdark_boss_only(n)]: (f"Everdark {n}", None)
+       for n in EVERDARK_NIGHTLORDS},
+    **{location_name_to_id[location_name_everdark(c, n)]: (f"Everdark {n}", c)
+       for n in EVERDARK_NIGHTLORDS for c in CHARACTERS},
 }
 
 
@@ -175,7 +181,7 @@ def goal_rows(
             all_of.setdefault(nightlord, []).append(child(ids[0]))
 
     rows = []
-    for nightlord in NIGHTLORDS:
+    for nightlord in ALL_NIGHTLORD_ENTRIES:
         if nightlord in any_of:
             children = any_of[nightlord]
             statuses = {c.status for c in children}

@@ -13,7 +13,7 @@ branches on.
 
 import unittest
 
-from BaseClasses import ItemClassification
+from BaseClasses import ItemClassification, LocationProgressType
 from Options import OptionError
 from test.bases import WorldTestBase
 from worlds.nightreign.game_data import (ALL_NIGHTLORD_ENTRIES, CHARACTERS, CURRENCY_BUNDLES,
@@ -268,7 +268,7 @@ class NightreignEverdarkWithGateTest(WorldTestBase):
     # exactly what would catch an Everdark access_rule mistake reintroducing the original softlock.
 
 
-class NightreignEverdarkNotInGoalGroupsTest(WorldTestBase):
+class NightreignEverdarkInGoalGroupsTest(WorldTestBase):
     game = "Elden Ring Nightreign"
     options = {
         "included_nightlords": ALL_NIGHTLORDS_WITH_EVERDARK,
@@ -276,11 +276,10 @@ class NightreignEverdarkNotInGoalGroupsTest(WorldTestBase):
         "goal": "all_bosses_all_characters",
     }
 
-    def test_goal_groups_ignores_everdark_locations(self) -> None:
-        # all_bosses' goal_groups is one singleton per active location - if Everdark locations
-        # leaked in, this count would include them too, and some seeds could become unwinnable
-        # since Everdark availability isn't guaranteed (see Options.py's disclaimer).
-        self.assertEqual(len(self.world.goal_groups), len(CHARACTERS) * len(NIGHTLORDS))
+    def test_goal_groups_include_everdark_locations(self) -> None:
+        # all_bosses_all_characters' goal_groups is one singleton per Defeat location, Everdark
+        # included - included_nightlords is the definitive goal scope.
+        self.assertEqual(len(self.world.goal_groups), len(CHARACTERS) * len(ALL_NIGHTLORD_ENTRIES))
 
 
 class NightreignEverdarkAccessIsSeparateTest(WorldTestBase):
@@ -363,12 +362,42 @@ class NightreignSingleCurrencyFillerTest(WorldTestBase):
 # World.create_regions() builds self.goal_groups (see client.py's _goal_complete). These tests
 # check that structure directly, not the fill/reachability invariant test_fill covers above.
 
-class NightreignGoalRandomWrongGranularityTest(WorldTestBase):
+class NightreignGoalRandomBossOnlyTest(WorldTestBase):
+    game = "Elden Ring Nightreign"
+    options = {
+        "goal": "random_subset",
+        "check_style": "boss",
+        "goal_random_min": 3,
+        "goal_random_max": 3,
+    }
+
+    def test_random_goal_picks_boss_only_objectives(self) -> None:
+        boss_only_ids = (
+            {self.world.location_name_to_id[location_name_boss_only(n)] for n in NIGHTLORDS}
+            | {self.world.location_name_to_id[location_name_everdark_boss_only(n)]
+               for n in EVERDARK_NIGHTLORDS}
+        )
+        self.assertEqual(len(self.world.goal_groups), 3)
+        for group in self.world.goal_groups:
+            self.assertEqual(len(group), 1)
+            self.assertIn(group[0], boss_only_ids)
+
+    def test_tracker_shows_every_objective(self) -> None:
+        rows = goal_rows(self.world.goal_groups, set(), set(), False, False)
+        self.assertEqual(len(rows), 3)
+
+
+class NightreignGoalRandomBossOnlyMinTooHighTest(WorldTestBase):
     game = "Elden Ring Nightreign"
     auto_construct = False
-    options = {"goal": "random_subset", "check_style": "boss"}
+    options = {
+        "goal": "random_subset",
+        "check_style": "boss",
+        "included_nightlords": ["Tricephalos", "Everdark Tricephalos"],
+        "goal_random_min": 3,  # only 2 bosses - characters don't multiply in boss mode
+    }
 
-    def test_random_goal_requires_boss_per_character(self) -> None:
+    def test_random_goal_min_above_available_bosses(self) -> None:
         with self.assertRaises(OptionError):
             self.world_setup()
 
@@ -417,13 +446,15 @@ class NightreignGoalAllBossesAnyCharacterTest(WorldTestBase):
     }
 
     def test_goal_groups_is_one_group_per_nightlord(self) -> None:
-        self.assertEqual(len(self.world.goal_groups), len(NIGHTLORDS))
+        # Default included_nightlords has every Everdark entry, each its own group.
+        self.assertEqual(len(self.world.goal_groups), len(ALL_NIGHTLORD_ENTRIES))
         for group in self.world.goal_groups:
             self.assertEqual(len(group), 2)  # Wylder + Guardian
 
     def test_tracker_shows_one_any_character_row_per_nightlord(self) -> None:
         rows = goal_rows(self.world.goal_groups, set(), set(), False, False)
-        self.assertEqual([r.name for r in rows], [f"{n} (any character)" for n in NIGHTLORDS])
+        self.assertEqual([r.name for r in rows],
+                         [f"{n} (any character)" for n in ALL_NIGHTLORD_ENTRIES])
         self.assertTrue(all(len(r.children) == 2 for r in rows))
 
 
@@ -448,6 +479,34 @@ class NightreignGoalRandomTest(WorldTestBase):
         # goal_rows silently skips ids it can't map, so this catches a Defeat id it doesn't know.
         rows = goal_rows(self.world.goal_groups, set(), set(), False, False)
         self.assertEqual(sum(len(r.children) for r in rows), len(self.world.goal_groups))
+
+
+class NightreignGoalRandomIncludesEverdarkTest(WorldTestBase):
+    game = "Elden Ring Nightreign"
+    options = {
+        "goal": "random_subset",
+        "check_style": "boss_per_character",
+        "included_characters": ["Wylder"],
+        "included_nightlords": ["Tricephalos", "Everdark Tricephalos"],
+        "starting_boss": "tricephalos",
+        # Only 2 combos exist, so both must be picked - including the Everdark one.
+        "goal_random_min": 2,
+        "goal_random_max": 2,
+    }
+
+    def test_everdark_location_is_goal_eligible(self) -> None:
+        goal_ids = {location_id for group in self.world.goal_groups for location_id in group}
+        self.assertIn(
+            self.world.location_name_to_id[location_name_everdark("Wylder", "Tricephalos")],
+            goal_ids,
+        )
+
+    def test_tracker_shows_everdark_row_gated_by_its_own_access(self) -> None:
+        rows = goal_rows(self.world.goal_groups, set(), set(), True, False)
+        self.assertEqual([r.name for r in rows], ["Tricephalos", "Everdark Tricephalos"])
+        self.assertEqual(rows[1].children[0].status, "locked")
+        rows = goal_rows(self.world.goal_groups, {"Everdark Tricephalos Access"}, set(), True, False)
+        self.assertEqual(rows[1].children[0].status, "available")
 
 
 class NightreignStartingBossEverdarkTest(WorldTestBase):
@@ -502,9 +561,21 @@ class NightreignWinCountChecksOnTest(WorldTestBase):
         # other location here (topology_present = False).
         self.assertTrue(self.can_reach_location("Win 25 Expeditions"))
 
+    def test_only_early_win_counts_can_hold_progression(self) -> None:
+        # Past 5 wins, a player could be stuck repeating their only unlocked run, so those
+        # thresholds are excluded (AP's fill then keeps progression/useful items off them).
+        for loc in self.multiworld.get_locations(self.world.player):
+            if not loc.name.startswith("Win "):
+                continue
+            count = int(loc.name.split()[1])
+            if count <= 5:
+                self.assertEqual(loc.progress_type, LocationProgressType.DEFAULT, loc.name)
+            else:
+                self.assertEqual(loc.progress_type, LocationProgressType.EXCLUDED, loc.name)
+
     def test_win_count_locations_excluded_from_goal_groups(self) -> None:
         # goal_groups is built from `locations` only (see create_regions()) - a win-count location
-        # id should never show up there, same guarantee Everdark locations already have.
+        # id should never show up there.
         all_goal_ids = {
             location_id for group in self.world.goal_groups for location_id in group
         }
@@ -835,18 +906,21 @@ class NightreignAllExtraCheckFamiliesTogetherTest(WorldTestBase):
         )
 
     def test_no_extra_check_family_location_in_goal_groups(self) -> None:
-        # In boss_per_character mode, the only location goal_groups (goal=all_bosses_all_characters)
-        # should ever contain is the base per-character "Defeat Tricephalos as Wylder" - everything
-        # else this slot generated (bonus checks, Night 1/2, weak/strong, Everdark) must be
-        # disjoint. Exact-name exclusion, not a prefix match: a prefix match on "Defeat Tricephalos
-        # as" would also swallow "Defeat Tricephalos as Wylder x2" and silently weaken this test.
+        # In boss_per_character mode, the only locations goal_groups (goal=all_bosses_all_characters)
+        # should ever contain are the per-character Defeat checks - "Defeat Tricephalos as Wylder"
+        # and its Everdark counterpart - everything else this slot generated (bonus checks, Night
+        # 1/2, weak/strong) must be disjoint. Exact-name exclusion, not a prefix match: a prefix
+        # match on "Defeat Tricephalos as" would also swallow "Defeat Tricephalos as Wylder x2" and
+        # silently weaken this test.
         all_goal_ids = {
             location_id for group in self.world.goal_groups for location_id in group
         }
-        base_defeat_name = location_name("Wylder", "Tricephalos")
+        defeat_names = {location_name("Wylder", "Tricephalos"),
+                        location_name_everdark("Wylder", "Tricephalos")}
+        self.assertEqual(all_goal_ids, {self.world.location_name_to_id[n] for n in defeat_names})
         extra_ids = {
             loc.address for loc in self.multiworld.get_locations(self.world.player)
-            if loc.name != base_defeat_name
+            if loc.name not in defeat_names
         }
         self.assertTrue(extra_ids)
         self.assertTrue(extra_ids.isdisjoint(all_goal_ids))

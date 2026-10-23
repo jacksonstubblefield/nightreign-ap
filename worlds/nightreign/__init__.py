@@ -1,14 +1,15 @@
-from BaseClasses import Region, Tutorial
+from BaseClasses import LocationProgressType, Region, Tutorial
 from Options import OptionError
 from worlds.AutoWorld import World, WebWorld
 from worlds.LauncherComponents import Component, Type, components, icon_paths, launch_subprocess
 
 from .game_data import (ACCESS_CHARACTERS, ACCESS_NIGHTLORDS, CHARACTERS, CURRENCY_BUNDLES,
-                        CURRENCY_COUNTER_OFFSETS, EVERDARK_NIGHTLORDS, NIGHTLORDS, bonus_indices,
+                        CURRENCY_COUNTER_OFFSETS, EVERDARK_NIGHTLORD_ENTRIES, EVERDARK_NIGHTLORDS,
+                        NIGHTLORDS, bonus_indices,
                         bundles_for_amount, currency_bundle_names,
                         starting_free_characters,
                         starting_free_everdark_nightlords, starting_free_nightlords,
-                        win_count_threshold_list)
+                        WIN_COUNT_PROGRESSION_MAX, win_count_threshold_list)
 from .Items import FILLER_ITEM_NAMES, NightreignItem, item_name_to_id, item_table
 from .Locations import (NightreignLocation, location_name, location_name_boss_only,
                         location_name_everdark, location_name_everdark_boss_only,
@@ -61,9 +62,8 @@ class NightreignWorld(World):
     check_style set to boss_per_character, a win as a not-yet-unlocked character also
     doesn't send its check. Each Everdark Sovereign is its own separate entry in
     included_nightlords (e.g. "Everdark Tricephalos", included by default) - defeating one is a
-    separate, optional location, never required for the goal, since Everdark availability depends
-    on an external weekly rotation this world can't unlock or guarantee (see Options.py's
-    IncludedNightlords disclaimer). Everdark Sovereigns are treated as entirely separate bosses
+    separate location, and counts toward the goal like any other included boss (every goal but
+    night_aspect). Everdark Sovereigns are treated as entirely separate bosses
     from their base Nightlord: with gate_boss_access on, an Everdark location is gated behind its
     own "Everdark X Access" item, independent of whether the base Nightlord's own Access item has
     been received. With win_count_checks enabled, extra locations are added for winning a
@@ -172,19 +172,18 @@ class NightreignWorld(World):
 
         included_characters = self.options.included_characters.value
         # included_nightlords.value may also contain "Everdark X" entries (see
-        # game_data.EVERDARK_NIGHTLORD_ENTRIES/Options.py's IncludedNightlords) - filtered out here
-        # since goal_random_count/the night_aspect check below are both about base Nightlords only
-        # (random_subset samples from create_regions()'s `locations`, never `everdark_locations`).
+        # game_data.EVERDARK_NIGHTLORD_ENTRIES/Options.py's IncludedNightlords) - split out here
+        # since the night_aspect check below is about base Nightlords only, while random_subset
+        # samples from both create_regions()'s `locations` and `everdark_locations`.
+        # Night Aspect has no Everdark form, so the night_aspect goal stays base-only.
         included_nightlords = [
             nl for nl in self.options.included_nightlords.value if nl in NIGHTLORDS
         ]
+        included_everdark = [
+            nl for nl in self.options.included_nightlords.value if nl in EVERDARK_NIGHTLORD_ENTRIES
+        ]
         per_character = self.options.check_style == "boss_per_character"
 
-        if self.options.goal == "random_subset" and not per_character:
-            raise OptionError(
-                f"{self.player_name}: goal 'random_subset' requires check_style to "
-                "be 'boss_per_character'."
-            )
         if self.options.goal == "night_aspect" and "Night Aspect" not in included_nightlords:
             raise OptionError(
                 f"{self.player_name}: goal 'night_aspect' requires Night Aspect to be in "
@@ -193,14 +192,21 @@ class NightreignWorld(World):
 
         self.goal_random_count = 0
         if self.options.goal == "random_subset":
-            available = len(included_characters) * len(included_nightlords)
+            # random_subset samples create_regions()'s Defeat locations, so it follows check_style:
+            # boss x character objectives with boss_per_character, plain boss objectives otherwise.
+            available = len(included_nightlords) + len(included_everdark)
+            if per_character:
+                available *= len(included_characters)
             goal_min = self.options.goal_random_min.value
             goal_max = self.options.goal_random_max.value
             if goal_min > available:
+                scope = (
+                    "included_characters x included_nightlords combinations" if per_character
+                    else "included_nightlords"
+                )
                 raise OptionError(
                     f"{self.player_name}: goal_random_min ({goal_min}) is higher than the "
-                    f"number of included_characters x included_nightlords combinations "
-                    f"available ({available})."
+                    f"number of {scope} (Everdark included) available ({available})."
                 )
             if goal_min > goal_max:
                 raise OptionError(
@@ -255,10 +261,8 @@ class NightreignWorld(World):
         # above, but over whichever EVERDARK_NIGHTLORDS entries have their own "Everdark X" entry
         # in included_nightlords (see game_data.EVERDARK_NIGHTLORD_ENTRIES/Options.py's
         # IncludedNightlords) - each Everdark Sovereign is included independently of its base
-        # Nightlord, empty list when none are selected. Deliberately kept out of goal_groups below
-        # (see Options.py's disclaimer): Everdark Sovereign availability depends on an external
-        # weekly rotation this world can't unlock or guarantee, so requiring one for the goal could
-        # make a seed impossible to finish.
+        # Nightlord, empty list when none are selected. Goal-eligible like `locations` (see
+        # goal_groups below), with each Everdark Sovereign counting as its own boss.
         self.everdark_nightlords = [
             nightlord for nightlord in EVERDARK_NIGHTLORDS
             if f"Everdark {nightlord}" in included_nightlords
@@ -348,25 +352,32 @@ class NightreignWorld(World):
         # goal_groups: a list of groups, each satisfied by ANY one of its location ids being
         # checked; the goal is complete once EVERY group is satisfied (see client.py's
         # _goal_complete). This varies by `goal` option; the location set above never changes.
-        # Built from `locations` only - everdark_locations is never goal-eligible, see above.
+        # included_nightlords/included_characters are the definitive goal scope: every included
+        # Everdark Sovereign counts as its own boss, alongside the base Nightlords.
         goal = self.options.goal.current_key
         ids_by_name = self.location_name_to_id
+
+        def _groups_per_boss(location_list: list) -> list[list[int]]:
+            # Kept separate per list since Everdark tuples carry their base Nightlord's name.
+            by_boss: dict[str, list[int]] = {}
+            for name, nightlord, _character in location_list:
+                by_boss.setdefault(nightlord, []).append(ids_by_name[name])
+            return list(by_boss.values())
+
         if goal == "night_aspect":
             self.goal_groups = [[
                 ids_by_name[name] for name, nightlord, _character in locations
                 if nightlord == "Night Aspect"
             ]]
         elif goal == "all_bosses":
-            self.goal_groups = [
-                [ids_by_name[name] for name, nl, _character in locations if nl == nightlord]
-                for nightlord in NIGHTLORDS
-                if nightlord in included_nightlords
-            ]
+            self.goal_groups = _groups_per_boss(locations) + _groups_per_boss(everdark_locations)
         elif goal == "random_subset":
-            chosen = self.random.sample(locations, self.goal_random_count)
+            chosen = self.random.sample(locations + everdark_locations, self.goal_random_count)
             self.goal_groups = [[ids_by_name[name]] for name, _nightlord, _character in chosen]
         else:
-            self.goal_groups = [[ids_by_name[name]] for name, _nightlord, _character in locations]
+            self.goal_groups = [
+                [ids_by_name[name]] for name, _nightlord, _character in locations + everdark_locations
+            ]
 
         menu = Region("Menu", self.player, self.multiworld)
 
@@ -407,12 +418,9 @@ class NightreignWorld(World):
             # Everdark locations are NOT excluded from progression (unlike an earlier revision of
             # this feature): now that Everdark Sovereigns are entirely separate bosses with their
             # own Access item, an Everdark location is just as legitimate a place for AP's fill
-            # algorithm to route progression through as any other - the "might not be reachable
-            # this week" risk is accepted as part of the same onus-on-the-player disclaimer that
-            # already covers Everdark availability in general (see Options.py's
-            # IncludedNightlords). goal_groups still excludes Everdark locations (see below) so
-            # the goal itself is never required to depend on one, but that's a separate concern
-            # from whether one may hold a progression item.
+            # algorithm to route progression through as any other (unlock_all_bosses_in_game makes
+            # every Everdark Sovereign selectable, so there's no weekly-rotation risk to route
+            # around).
             return location
 
         def _add_menu_locations(location_list: list, everdark: bool) -> None:
@@ -435,11 +443,14 @@ class NightreignWorld(World):
         _add_menu_locations(strong_reward_everdark_locations, everdark=True)
         # No access_rule: win-count locations aren't tied to any specific boss/character Access
         # item, so - like everything else here (topology_present = False) - they're reachable from
-        # the start.
-        for name in win_count_names:
-            menu.locations.append(
-                NightreignLocation(self.player, name, self.location_name_to_id[name], menu)
-            )
+        # the start. Thresholds above WIN_COUNT_PROGRESSION_MAX are excluded (filler/traps only),
+        # since "reachable" there really means repeating the same unlocked run many times over.
+        for count in self.win_count_thresholds:
+            name = location_name_win_count(count)
+            location = NightreignLocation(self.player, name, self.location_name_to_id[name], menu)
+            if count > WIN_COUNT_PROGRESSION_MAX:
+                location.progress_type = LocationProgressType.EXCLUDED
+            menu.locations.append(location)
         self.multiworld.regions.append(menu)
 
     def create_items(self) -> None:

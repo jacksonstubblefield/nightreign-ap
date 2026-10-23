@@ -290,7 +290,8 @@ class WinCountChecks(Toggle):
     """If enabled, adds extra checks for winning a cumulative number of Expeditions this seed,
     regardless of which boss or character was defeated - at 1, 2, 3, 5, 7, and 10 total wins, then
     every 5 wins after that up to win_count_up_to (e.g. win_count_up_to=21 also adds 15, 20, and
-    21). Never required for the goal.
+    21). Never required for the goal. Only the checks up to 5 wins can hold progression items; the
+    later ones only ever hold filler or traps, so nobody is stuck waiting on you to grind wins.
     """
 
     display_name = "Win Count Checks"
@@ -338,7 +339,11 @@ class Goal(Choice):
 
     "All Bosses": defeat every included Nightlord at least once, with any character.
 
-    "Random": creates a random subset of defeating nightlords as random characters. 
+    "Random": requires a random subset of objectives. With Check Style set to Boss per Character,
+    each objective is a specific boss with a specific character; otherwise each is just a boss.
+
+    Every goal except Night Aspect covers exactly what's in Included Nightlords and Included
+    Characters, and each included Everdark Sovereign counts as its own boss.
     """
 
     display_name = "Goal"
@@ -350,22 +355,24 @@ class Goal(Choice):
 
 
 class GoalRandomMin(Range):
-    """Minimum number of specific "Defeat X as Y" objectives to require, when goal is random_subset.
+    """Minimum number of objectives to require, when goal is random_subset. Each objective is a
+    "Defeat X as Y" with Check Style set to Boss per Character, otherwise a "Defeat X".
     """
 
     display_name = "Random Goal Minimum Objectives"
     range_start = 1
-    range_end = len(CHARACTERS) * len(NIGHTLORDS)  # the largest possible combo count.
+    range_end = len(CHARACTERS) * len(ALL_NIGHTLORD_ENTRIES)  # the largest possible combo count.
     default = 3
 
 
 class GoalRandomMax(Range):
-    """Maximum number of specific "Defeat X as Y" objectives to require, when goal is random_subset.
+    """Maximum number of objectives to require, when goal is random_subset. Each objective is a
+    "Defeat X as Y" with Check Style set to Boss per Character, otherwise a "Defeat X".
     """
 
     display_name = "Random Goal Maximum Objectives"
     range_start = 1
-    range_end = len(CHARACTERS) * len(NIGHTLORDS)
+    range_end = len(CHARACTERS) * len(ALL_NIGHTLORD_ENTRIES)
     default = 8
 
 

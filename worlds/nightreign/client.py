@@ -6,9 +6,8 @@ included for this slot (slot_data's everdark_nightlords, from Options.py's
 IncludedNightlords - each Everdark Sovereign is its own separate entry there,
 e.g. "Everdark Tricephalos") and the win is detected as its Everdark variant
 (memory_reader.py's read_everdark_flag()), a separate "Defeat Everdark X"
-location is sent instead of the normal one - see Options.py's
-IncludedNightlords for the disclaimer around Everdark availability being
-outside this project's control. Everdark
+location is sent instead of the normal one. Everdark Sovereigns are made selectable by
+unlock_all_bosses_in_game's menu patch (see below), not by any per-boss EventFlag. Everdark
 Sovereigns are treated as entirely separate bosses from their base Nightlord: with
 gate_boss_access on, an Everdark win is checked against its own "Everdark X Access" item, never
 the base Nightlord's, so having received one doesn't unlock the other. When the
@@ -912,9 +911,10 @@ class NightreignContext(CommonContext):
         not notice mid-run."""
         is_everdark = everdark and boss_name in EVERDARK_NIGHTLORDS
         access_name = f"Everdark {boss_name} Access" if is_everdark else f"{boss_name} Access"
-        # Everdark access names are never in ACCESS_ITEM_EVENT_FLAGS (no known in-game unlock
-        # mechanism - see Options.py's disclaimer), so this warning naturally never fires for an
-        # Everdark run, same as it already skips Tricephalos/Balancers/Dreglord for the same reason.
+        # Everdark access names are never in ACCESS_ITEM_EVENT_FLAGS (no per-boss EventFlag - only
+        # unlock_all_bosses_in_game's whole-menu patch makes them selectable), so this warning
+        # naturally never fires for an Everdark run, same as it already skips
+        # Tricephalos/Balancers/Dreglord for the same reason.
         if access_name not in ACCESS_ITEM_EVENT_FLAGS or access_name in self._owned_item_names():
             return
         logger.warning(
@@ -2235,9 +2235,9 @@ class NightreignContext(CommonContext):
             # the Fog, Sentient Pest, etc. too, in-game). This check is keyed on the specific
             # Nightlord's own Access item, not the shared flag, so a win against one of those
             # still-unowned 5 is correctly skipped here even though the game let the player queue
-            # into it. Everdark Access items have no such shared-flag mechanism at all (no known
-            # in-game unlock exists for Everdark - see Options.py's disclaimer), so for those this
-            # check is the only gate, not defense-in-depth on top of an in-game one.
+            # into it. Everdark Access items have no per-boss EventFlag at all (only
+            # unlock_all_bosses_in_game's whole-menu patch makes Everdark selectable), so for
+            # those this check is the only gate, not defense-in-depth on top of an in-game one.
             logger.info(
                 "Win detected against %s, but this slot hasn't received %s yet - not sending.",
                 (f"Everdark {boss.name}" if is_everdark_win else boss.name), access_name,

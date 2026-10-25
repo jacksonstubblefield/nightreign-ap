@@ -9,7 +9,8 @@ from Options import Choice, OptionGroup, OptionSet, PerGameCommonOptions, Range,
 
 # Local Imports
 from .game_data import (ALL_NIGHTLORD_ENTRIES, CHARACTERS, CHECKS_PER_BOSS_DEFAULT,
-                        CHECKS_PER_BOSS_MAX, EVERDARK_NIGHTLORDS, NIGHTLORDS, STATUS_TRAPS,
+                        CHECKS_PER_BOSS_MAX, EVERDARK_NIGHTLORDS, LEVEL_CAP, MAX_FLASK_FLOOR_CAP,
+                        NIGHTLORDS, STARTING_LEVEL, STARTING_MAX_FLASKS, STATUS_TRAPS,
                         WIN_COUNT_UP_TO_MAX, WIN_COUNT_UP_TO_MIN)
 
 
@@ -286,6 +287,30 @@ class EnabledTraps(OptionSet):
     default = frozenset(STATUS_TRAPS)
 
 
+class ProgressiveLevels(Range):
+    """How many Progressive Level items to add to the pool. Each one you receive raises your
+    minimum level in every Expedition by 1, starting from level 1 (so 6 copies means level 7). If
+    your level is ever below it during an Expedition, it's raised back up. 0 turns this off.
+    """
+
+    display_name = "Progressive Levels"
+    range_start = 0
+    range_end = LEVEL_CAP - STARTING_LEVEL
+    default = 0
+
+
+class ProgressiveFlasks(Range):
+    """How many Progressive Flask items to add to the pool. Each one you receive raises the max
+    flask charges you start every Expedition with by 1, from 3 up to 10. Flask charges you pick up
+    during the Expedition still add on top. 0 turns this off.
+    """
+
+    display_name = "Progressive Flasks"
+    range_start = 0
+    range_end = MAX_FLASK_FLOOR_CAP - STARTING_MAX_FLASKS
+    default = 0
+
+
 class WinCountChecks(Toggle):
     """If enabled, adds extra checks for winning a cumulative number of Expeditions this seed,
     regardless of which boss or character was defeated - at 1, 2, 3, 5, 7, and 10 total wins, then
@@ -407,6 +432,10 @@ option_groups = [
         ReceiveSovereignSigils,
         OtherworldOfferings,
     ]),
+    OptionGroup("Metaprogression", [
+        ProgressiveLevels,
+        ProgressiveFlasks,
+    ]),
     OptionGroup("Traps", [
         TrapPercentage,
         EnabledTraps,
@@ -444,6 +473,8 @@ class NightreignOptions(PerGameCommonOptions):
     receive_runes: ReceiveRunes
     receive_sovereign_sigils: ReceiveSovereignSigils
     otherworld_offerings: OtherworldOfferings
+    progressive_levels: ProgressiveLevels
+    progressive_flasks: ProgressiveFlasks
     trap_percentage: TrapPercentage
     enabled_traps: EnabledTraps
     win_count_checks: WinCountChecks

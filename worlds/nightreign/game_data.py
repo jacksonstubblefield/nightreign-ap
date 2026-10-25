@@ -364,6 +364,42 @@ RUNES_COUNTER_OFFSET = 0x6C
 # in their AOBs) - this just keeps one batched request inside a signed 32-bit int.
 CURRENCY_GRANT_MAX = 999_999_999
 
+# --- Metaprogression write path (Progressive Level / Progressive Flask) ---
+# SET_LEVEL_AOB is the CT table's "Set Max lvl" script (Volkov_ilya37): fn(PlayerGameData*, level),
+# the same 2-argument shape as the currency grants above. It writes PLAYER_LEVEL_OFFSET itself and
+# then calls on into the game - the reason to go through it rather than poke the level directly.
+# Max flask charges are a plain byte with no setter ("Max Flask Quantity [Max = 20]" entry). Both
+# live-tested 2026-10-25 via nightreign_spike/level_flask_probe.py. Current (not max) charges
+# aren't in PlayerGameData's first 0x200 bytes, so this never touches them.
+SET_LEVEL_AOB = "40 53 48 83 EC 40 89 51 68 44 8B C2 48 8D 54 24 20"
+PLAYER_LEVEL_OFFSET = 0x68
+MAX_FLASK_OFFSET = 0xFF
+
+# What every Expedition starts at before any Progressive copies. 3 flasks was read in the
+# Roundtable Hold, not yet compared across characters.
+STARTING_LEVEL = 1
+STARTING_MAX_FLASKS = 3
+LEVEL_CAP = 15
+# Well short of the game's own 20: picking up a flask charge while at 20 pops a debug text box
+# (live-tested 2026-10-25), so leave in-run pickups plenty of room above the floor.
+MAX_FLASK_FLOOR_CAP = 10
+
+# Item names, in item id order - new ones are appended (Items.py derives item ids from this order).
+PROGRESSIVE_LEVEL = "Progressive Level"
+PROGRESSIVE_FLASK = "Progressive Flask"
+METAPROGRESSION_ITEMS = (PROGRESSIVE_LEVEL, PROGRESSIVE_FLASK)
+
+
+def level_floor(copies: int) -> int:
+    """The lowest level the client lets the player sit at with `copies` Progressive Levels."""
+    return min(STARTING_LEVEL + copies, LEVEL_CAP)
+
+
+def max_flask_floor(copies: int) -> int:
+    """The fewest max flask charges the client lets the player start with, given `copies`
+    Progressive Flasks."""
+    return min(STARTING_MAX_FLASKS + copies, MAX_FLASK_FLOOR_CAP)
+
 # --- Current Animation read path (flight gating for the item-drop write path) ---
 # WorldChrMan pointer-slot AOB, same shape as GAMEMAN_AOB/GAMEDATAMAN_AOB. Unlike those, its live
 # object address changes across scenes, so callers must re-walk the chain on every read.
@@ -473,15 +509,22 @@ PLAYER_INS_OFFSET = 0x174E8
 # Raider's rot bar, stacking procs it, 6505 does the same for poison. Each trap stacks
 # TRAP_APPLICATIONS of them (600 rot / 720 poison) so even a heavily resistance-boosted character
 # procs; applications past the proc are harmless. TRAP_APPLY_INTERVAL is the live-tested spacing -
-# applying the same id twice without a gap hasn't been tested. Sleep/Frost/Madness use the same
-# spreadsheet's strongest tiers ("Sleep Type 1|7 96", "Frost Type 1|6 80", "Madness Type 1|6 80") but
-# haven't been live-tested yet. New traps are appended - Items.py derives item ids from this order.
+# applying the same id twice without a gap hasn't been tested. Frost/Madness use the same
+# spreadsheet's strongest tiers ("Frost Type 1|6 80", "Madness Type 1|6 80"), also live-tested.
+# Sleep can't: a SpEffect only lands on its own caller with effectTargetSelfTarget
+# (+0x16C bit 2) and TargetSelf (+0x15F bit 0) set, and every weapon/enemy sleep row leaves them
+# clear - 6456 and the enemy-side 25009/25019 all did nothing in game. 6820502 is the only sleep row
+# with both bits (sleep power 40, same family as frost 6820202 / madness 6820402), so it gets
+# SLEEP_TRAP_APPLICATIONS to reach roughly the same total buildup - live-tested 2026-10-25, 20 of
+# them put the player to sleep. New traps are appended -
+# Items.py derives item ids from this order.
 TRAP_APPLICATIONS = 8
+SLEEP_TRAP_APPLICATIONS = 20
 TRAP_APPLY_INTERVAL = 0.5
 STATUS_TRAPS = {
     "Scarlet Rot Trap": (6605, TRAP_APPLICATIONS),
     "Poison Trap": (6505, TRAP_APPLICATIONS),
-    "Sleep Trap": (6456, TRAP_APPLICATIONS),
+    "Sleep Trap": (6820502, SLEEP_TRAP_APPLICATIONS),
     "Frostbite Trap": (6705, TRAP_APPLICATIONS),
     "Madness Trap": (6755, TRAP_APPLICATIONS),
 }

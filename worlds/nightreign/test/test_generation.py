@@ -17,14 +17,18 @@ from BaseClasses import ItemClassification, LocationProgressType
 from Options import OptionError
 from test.bases import WorldTestBase
 from worlds.nightreign.game_data import (ALL_NIGHTLORD_ENTRIES, CHARACTERS, CURRENCY_BUNDLES,
-                                          EVERDARK_NIGHTLORDS,
-                                          NIGHTLORD_BONUS_INDICES, NIGHTLORDS,
-                                          REWARD_CHECK_THRESHOLDS, STATUS_TRAPS)
+                                          EVERDARK_NIGHTLORDS, LEVEL_CAP, MAX_FLASK_FLOOR_CAP,
+                                          METAPROGRESSION_ITEMS, NIGHTLORD_BONUS_INDICES,
+                                          NIGHTLORDS, PROGRESSIVE_FLASK, PROGRESSIVE_LEVEL,
+                                          REWARD_CHECK_THRESHOLDS, STARTING_LEVEL,
+                                          STARTING_MAX_FLASKS, STATUS_TRAPS, level_floor,
+                                          max_flask_floor)
 from worlds.nightreign.Locations import (location_name, location_name_boss_only,
                                           location_name_everdark, location_name_everdark_boss_only,
                                           location_name_kill_bonus, location_name_night1,
                                           location_name_night2, location_name_strong_reward,
                                           location_name_weak_reward)
+from worlds.nightreign.Options import ProgressiveFlasks, ProgressiveLevels
 from worlds.nightreign.tracker import goal_rows
 
 # All base Nightlords plus every Everdark Sovereign entry (e.g. "Everdark Tricephalos") - the
@@ -1088,3 +1092,75 @@ class NightreignNoEnabledTrapsTest(WorldTestBase):
         names = {item.name for item in self.multiworld.itempool if item.player == self.player}
         self.assertFalse(names & set(STATUS_TRAPS))
         self.assertFalse(self.world.fill_slot_data()["status_traps"])
+
+
+# --- Metaprogression (Progressive Level / Progressive Flask) ---
+
+class NightreignMetaprogressionFloorTest(unittest.TestCase):
+    def test_no_copies_is_the_game_default(self) -> None:
+        self.assertEqual(level_floor(0), STARTING_LEVEL)
+        self.assertEqual(max_flask_floor(0), STARTING_MAX_FLASKS)
+
+    def test_floors_are_capped(self) -> None:
+        self.assertEqual(level_floor(100), LEVEL_CAP)
+        self.assertEqual(max_flask_floor(100), MAX_FLASK_FLOOR_CAP)
+
+    def test_option_maximums_reach_the_caps_exactly(self) -> None:
+        self.assertEqual(level_floor(ProgressiveLevels.range_end), LEVEL_CAP)
+        self.assertEqual(level_floor(ProgressiveLevels.range_end - 1), LEVEL_CAP - 1)
+        self.assertEqual(max_flask_floor(ProgressiveFlasks.range_end), MAX_FLASK_FLOOR_CAP)
+        self.assertEqual(max_flask_floor(ProgressiveFlasks.range_end - 1), MAX_FLASK_FLOOR_CAP - 1)
+
+
+class NightreignMetaprogressionOffByDefaultTest(WorldTestBase):
+    game = "Elden Ring Nightreign"
+
+    def test_no_progressive_items_and_slot_data_off(self) -> None:
+        names = {item.name for item in self.multiworld.itempool if item.player == self.player}
+        self.assertFalse(names & set(METAPROGRESSION_ITEMS))
+        slot_data = self.world.fill_slot_data()
+        self.assertEqual(slot_data["progressive_levels"], 0)
+        self.assertEqual(slot_data["progressive_flasks"], 0)
+
+
+class NightreignMetaprogressionMaxTest(WorldTestBase):
+    game = "Elden Ring Nightreign"
+    options = {
+        "progressive_levels": ProgressiveLevels.range_end,
+        "progressive_flasks": ProgressiveFlasks.range_end,
+    }
+
+    def test_pool_holds_every_copy(self) -> None:
+        own = [item for item in self.multiworld.itempool if item.player == self.player]
+        names = [item.name for item in own]
+        self.assertEqual(names.count(PROGRESSIVE_LEVEL), ProgressiveLevels.range_end)
+        self.assertEqual(names.count(PROGRESSIVE_FLASK), ProgressiveFlasks.range_end)
+        # They take locations from filler, not on top of them.
+        self.assertEqual(len(own), len(self.world.active_locations))
+
+    def test_progressive_items_are_useful_not_progression(self) -> None:
+        for item in self.multiworld.itempool:
+            if item.player == self.player and item.name in METAPROGRESSION_ITEMS:
+                self.assertEqual(item.classification, ItemClassification.useful)
+
+    def test_slot_data_carries_counts(self) -> None:
+        slot_data = self.world.fill_slot_data()
+        self.assertEqual(slot_data["progressive_levels"], ProgressiveLevels.range_end)
+        self.assertEqual(slot_data["progressive_flasks"], ProgressiveFlasks.range_end)
+
+
+class NightreignMetaprogressionNotEnoughRoomTest(WorldTestBase):
+    game = "Elden Ring Nightreign"
+    auto_construct = False
+    options = {
+        "included_nightlords": ["Tricephalos"],  # the starting boss, so no Access items
+        "goal": "all_bosses",
+        "checks_per_boss": 1,
+        "night_checks": False,
+        "win_count_checks": False,  # leaves exactly 1 location
+        "progressive_levels": 2,
+    }
+
+    def test_more_progressive_items_than_locations_raises(self) -> None:
+        with self.assertRaises(OptionError):
+            self.world_setup()

@@ -78,6 +78,17 @@ def set_player_hp(pm: pymem.Pymem, hp_address: int, hp: int) -> bool:
         return False
 
 
+def set_max_flasks(pm: pymem.Pymem, max_flask_address: int, count: int) -> bool:
+    """Writes the local player's max flask charges (PlayerGameData + game_data.MAX_FLASK_OFFSET) -
+    Progressive Flask's write path. A plain byte write, no setter call needed. False if the write
+    failed."""
+    try:
+        pm.write_uchar(max_flask_address, count)
+        return True
+    except (pymem.exception.MemoryWriteError, pymem.exception.WinAPIError):
+        return False
+
+
 def _run_remote_thread(pm: pymem.Pymem, address: int, params: Optional[int] = None) -> None:
     """pm.start_thread(), plus closing the thread handle it returns - pymem never closes it, so
     every remote call would otherwise leak one handle (and keep the dead thread object alive)."""
@@ -229,6 +240,41 @@ class NightreignSpEffectWriter:
             self.pm.write_bytes(self._param_addr, params, len(params))
             # Inside the try too, unlike grant(): this runs from a background task (see client.py's
             # _fire_trap), where an uncaught error from a game that just closed would go unlogged.
+            _run_remote_thread(self.pm, self._trampoline_addr, params=self._param_addr)
+        except (pymem.exception.MemoryWriteError, pymem.exception.WinAPIError):
+            return False
+        return True
+
+
+class NightreignLevelWriter:
+    """Sets the local player's level in a running nightreign.exe - Progressive Level's write path.
+    Ported from the CT table's "Set Max lvl" script, a 2-argument call fn(PlayerGameData, level),
+    so this reuses the EventFlag trampoline above.
+
+    Construct with the function address from NightreignMemoryReader's resolve_set_level_target().
+    Same blocking/threading caveat as NightreignMemoryWriter.set_event_flag: call via
+    loop.run_in_executor.
+    """
+
+    def __init__(self, pm: pymem.Pymem, func_addr: int):
+        self.pm = pm
+        self._func_addr = func_addr
+        self._trampoline_addr: Optional[int] = None
+        self._param_addr: Optional[int] = None
+
+    def set_level(self, player_data_addr: int, level: int) -> bool:
+        """Sets the PlayerGameData at player_data_addr (re-read by the caller right before this
+        call) to `level`. Same provisional-success caveat as set_event_flag: True means the call
+        ran, not that the level changed."""
+        if self._trampoline_addr is None:
+            code = _build_trampoline(self._func_addr)
+            self._trampoline_addr = self.pm.allocate(len(code))
+            self.pm.write_bytes(self._trampoline_addr, code, len(code))
+        if self._param_addr is None:
+            self._param_addr = self.pm.allocate(24)
+        params = struct.pack("<QQQ", player_data_addr, level, 0)
+        try:
+            self.pm.write_bytes(self._param_addr, params, len(params))
             _run_remote_thread(self.pm, self._trampoline_addr, params=self._param_addr)
         except (pymem.exception.MemoryWriteError, pymem.exception.WinAPIError):
             return False

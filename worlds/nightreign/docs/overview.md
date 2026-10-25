@@ -74,6 +74,23 @@ accepted in the Roundtable Hold waits for your next Expedition. Nothing arrives 
 boss or character you haven't unlocked yet. Accepted offerings that haven't arrived yet are
 forgotten when the client closes, but the offerings themselves are kept.
 
+## Progressive Level and Progressive Flask
+
+**New and not yet tested in a real game - please report any feedback or bugs.**
+
+Set `progressive_levels` (up to 14) and/or `progressive_flasks` (up to 7) to add that many of each
+item to the pool. Both are off by default. They make every Expedition a little easier as the
+multiworld goes on:
+
+- **Progressive Level**: each one you receive raises your minimum level by 1, starting from level
+  1. If your level is below it during an Expedition, it's raised back up, including after you
+  lose a level mid-run. Level-ups past the minimum work as normal, up to level 15.
+- **Progressive Flask**: each one you receive gives you 1 more max flask charge at the start of
+  every Expedition, starting from 3, up to 10. Flask charges you pick up during the Expedition
+  still add on top.
+
+Both kick in about 30 seconds into each Expedition, once you've landed.
+
 ## Credits
 
 Thanks to the Cheat Engine data miners who laid the foundation

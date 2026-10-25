@@ -3,7 +3,7 @@ from typing import NamedTuple
 from BaseClasses import Item, ItemClassification
 
 from .game_data import (ACCESS_CHARACTERS, ACCESS_NIGHTLORDS, CURRENCY_BUNDLES, EVERDARK_NIGHTLORDS,
-                        NIGHTLORDS, STATUS_TRAPS)
+                        METAPROGRESSION_ITEMS, NIGHTLORDS, STATUS_TRAPS)
 
 
 class NightreignItem(Item):
@@ -81,6 +81,18 @@ item_table = {
         ItemClassification.trap,
     )
     for i, name in enumerate(STATUS_TRAPS)
+} | {
+    # Metaprogression (see game_data.METAPROGRESSION_ITEMS): each copy received raises the level/
+    # max flask floor the client holds the player to during an Expedition (see client.py's
+    # _apply_metaprogression_floors). Useful, not progression - no location's logic expects them.
+    # Appended after everything above (ids continue sequentially) to avoid disturbing any existing
+    # seed's item ids.
+    name: ItemData(
+        BASE_ID + len(NIGHTLORDS) + len(ACCESS_NIGHTLORDS) + 2 + len(ACCESS_CHARACTERS)
+        + len(EVERDARK_NIGHTLORDS) + len(CURRENCY_BUNDLES) + len(STATUS_TRAPS) + i,
+        ItemClassification.useful,
+    )
+    for i, name in enumerate(METAPROGRESSION_ITEMS)
 }
 
 # get_filler_item_name() must only ever choose from FILLER_ITEM_NAMES, not item_table's full key

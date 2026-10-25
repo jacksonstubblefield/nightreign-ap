@@ -41,6 +41,7 @@ try:
         PLAYER_INS_OFFSET,
         PLAYER_MAX_HP_FINAL_OFFSET,
         RUNES_GRANT_AOB,
+        SET_LEVEL_AOB,
         SOVEREIGN_SIGIL_GRANT_AOB,
         SPEFFECT_CALL_AOB,
         SPEFFECT_CALL_BACKOFF,
@@ -75,6 +76,7 @@ except ImportError:
         PLAYER_INS_OFFSET,
         PLAYER_MAX_HP_FINAL_OFFSET,
         RUNES_GRANT_AOB,
+        SET_LEVEL_AOB,
         SOVEREIGN_SIGIL_GRANT_AOB,
         SPEFFECT_CALL_AOB,
         SPEFFECT_CALL_BACKOFF,
@@ -472,6 +474,22 @@ class NightreignMemoryReader:
         if base is None:
             return None
         return self._safe_read_uint(base + offset)
+
+    def read_player_data_ubyte(self, offset: int) -> Optional[int]:
+        """A uint8 at PlayerGameData+offset (e.g. game_data.MAX_FLASK_OFFSET), or None if
+        unreadable."""
+        base = self._read_player_data_base()
+        if base is None:
+            return None
+        return self._safe_read_ubyte(base + offset)
+
+    def resolve_set_level_target(self) -> int:
+        """Address of the game's set-level function (see game_data.SET_LEVEL_AOB), for
+        memory_writer.py's NightreignLevelWriter. Same call-only-when-wanted convention as
+        resolve_currency_target()."""
+        if not self.connected:
+            raise PointerNotFoundError("not connected - call connect() first")
+        return self._resolve_function_address(self.pm, SET_LEVEL_AOB)
 
     def resolve_current_animation_target(self) -> int:
         """Resolves the WorldChrMan pointer slot for read_current_animation() - see

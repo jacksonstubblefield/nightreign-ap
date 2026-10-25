@@ -5,7 +5,7 @@ from worlds.LauncherComponents import Component, Type, components, icon_paths, l
 
 from .game_data import (ACCESS_CHARACTERS, ACCESS_NIGHTLORDS, CHARACTERS, CURRENCY_BUNDLES,
                         CURRENCY_COUNTER_OFFSETS, EVERDARK_NIGHTLORD_ENTRIES, EVERDARK_NIGHTLORDS,
-                        NIGHTLORDS, bonus_indices,
+                        NIGHTLORDS, PROGRESSIVE_FLASK, PROGRESSIVE_LEVEL, bonus_indices,
                         bundles_for_amount, currency_bundle_names,
                         starting_free_characters,
                         starting_free_everdark_nightlords, starting_free_nightlords,
@@ -488,23 +488,32 @@ class NightreignWorld(World):
         self.multiworld.itempool += [self.create_item(name) for name in character_access_names]
         self.multiworld.itempool += [self.create_item(name) for name in everdark_access_names]
 
+        metaprogression_names = (
+            [PROGRESSIVE_LEVEL] * self.options.progressive_levels.value
+            + [PROGRESSIVE_FLASK] * self.options.progressive_flasks.value
+        )
+        self.multiworld.itempool += [self.create_item(name) for name in metaprogression_names]
+
         # character_access_names (and, now, everdark_access_names) have no guarantee of fitting
         # active_locations the way access_names does: "boss" mode's location count tracks
         # included_nightlords only, not included_characters, so this can genuinely run out of
-        # room. Structural limit, not a bug.
+        # room. Structural limit, not a bug. Progressive items aren't progression, but they still
+        # need a location each.
         total_progression = len(access_names) + len(character_access_names) + len(everdark_access_names)
-        if total_progression > len(self.active_locations):
+        total_non_filler = total_progression + len(metaprogression_names)
+        if total_non_filler > len(self.active_locations):
             raise OptionError(
-                f"{self.player_name}: needs {total_progression} progression items "
+                f"{self.player_name}: needs {total_non_filler} non-filler items "
                 f"({len(access_names)} boss + {len(character_access_names)} character + "
-                f"{len(everdark_access_names)} Everdark) but only "
-                f"{len(self.active_locations)} locations exist with these settings. "
-                "check_style=boss only makes one location per Nightlord, not per "
-                "character - switch to boss_per_character, reduce included_characters/"
-                "included_nightlords, or disable gate_boss_access/gate_character_access."
+                f"{len(everdark_access_names)} Everdark Access, {len(metaprogression_names)} "
+                f"Progressive Level/Flask) but only {len(self.active_locations)} locations exist "
+                "with these settings. check_style=boss only makes one location per Nightlord, not "
+                "per character - switch to boss_per_character, reduce included_characters/"
+                "included_nightlords/progressive_levels/progressive_flasks, or disable "
+                "gate_boss_access/gate_character_access."
             )
 
-        filler_count = len(self.active_locations) - total_progression
+        filler_count = len(self.active_locations) - total_non_filler
         self.multiworld.itempool += [self.create_filler() for _ in range(filler_count)]
 
         # starting_murk: precollected (start inventory), not pool items, so they take up no
@@ -563,6 +572,10 @@ class NightreignWorld(World):
             # were actually placed comes through as ordinary received items.
             "status_traps": bool(self.options.trap_percentage.value and self.options.enabled_traps.value),
             "starting_murk": self.options.starting_murk.value,
+            # Only tell the client whether to watch level/flasks - how many copies have arrived
+            # comes through as ordinary received items.
+            "progressive_levels": self.options.progressive_levels.value,
+            "progressive_flasks": self.options.progressive_flasks.value,
             "checks_per_boss": self.options.checks_per_boss.value,
             "night_checks": bool(self.options.night_checks),
             "win_count_checks": bool(self.options.win_count_checks),

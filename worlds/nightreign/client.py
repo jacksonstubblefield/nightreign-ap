@@ -46,7 +46,10 @@ own Expeditions menu regardless of real in-game unlock progress - purely a menu-
 it never touches AP's own unlock state, so gate_boss_access's Access-item checks above still apply
 exactly as if this were off. Status-effect traps (Scarlet Rot/Poison/Sleep/Frostbite/Madness, see
 game_data.STATUS_TRAPS) go off during an Expedition, after the same settle window as drops, by calling
-the game's own apply-SpEffect function on the player (see _maybe_start_trap). With
+the game's own apply-SpEffect function on the player (see _maybe_start_trap). Received Progressive
+Level/Progressive Flask copies set a floor the player's level and max flask charges are raised to
+after the same settle window - level kept there all run, flasks set once per Expedition (see
+_apply_metaprogression_floors). With
 otherworld_offerings on, weapon/talisman drops and Runes are held as offerings until the player
 accepts them from the Offerings tab or with /accept - see offerings.py. With all four options off, received items
 have no in-game effect - the base CommonContext/CLI/GUI machinery just logs
@@ -108,10 +111,12 @@ from .game_data import (ACCESS_CHARACTERS, ACCESS_ITEM_EVENT_FLAGS, ACCESS_NIGHT
                         CHARACTER_ACCESS_EVENT_FLAGS, CURRENCY_BUNDLES,
                         CURRENCY_COUNTER_OFFSETS, CURRENCY_GRANT_MAX,
                         DAY_PHASE_DAY_2, DAY_PHASE_DAY_3, DAY_PHASE_NIGHT_1, DAY_PHASE_NIGHT_2, EVERDARK_NIGHTLORDS,
-                        CHECKS_PER_BOSS_DEFAULT, STATUS_TRAPS, TRAP_APPLY_INTERVAL,
+                        CHECKS_PER_BOSS_DEFAULT, MAX_FLASK_OFFSET, PLAYER_LEVEL_OFFSET,
+                        PROGRESSIVE_FLASK, PROGRESSIVE_LEVEL, STATUS_TRAPS, TRAP_APPLY_INTERVAL,
                         bonus_indices, currency_bundle_names, is_flying_animation,
-                        is_nightlord_kill_tick, starting_free_characters,
-                        starting_free_everdark_nightlords, starting_free_nightlords)
+                        is_nightlord_kill_tick, level_floor, max_flask_floor,
+                        starting_free_characters, starting_free_everdark_nightlords,
+                        starting_free_nightlords)
 from .death_link import DEATH_LINK_MODES, DeathLinkDetector
 from .item_data import (EFFECT_CAP_MAP, TALISMAN_TABLE, WEAPON_ART_TABLE, WEAPON_TABLE,
                         natural_weapon_tier, roll_effect_tier, roll_upgrade_tier,
@@ -124,7 +129,8 @@ from .Locations import (location_name, location_name_boss_only, location_name_ev
                         location_name_to_id, location_name_weak_reward, location_name_win_count)
 from .memory_reader import EACDetectedError, NightreignMemoryReader, PointerNotFoundError
 from .memory_writer import (NightreignCurrencyWriter, NightreignItemDropWriter,
-                            NightreignMemoryWriter, NightreignSpEffectWriter, set_player_hp)
+                            NightreignLevelWriter, NightreignMemoryWriter,
+                            NightreignSpEffectWriter, set_max_flasks, set_player_hp)
 from . import tracker
 from .overlay import NightreignOverlay
 
@@ -137,7 +143,7 @@ RECONNECT_INTERVAL = 2
 BUILD_MISMATCH_BACKOFF = 30
 
 # The fly-in animation
-EXPEDITION_ENTRY_SETTLE_SECONDS = 60
+EXPEDITION_ENTRY_SETTLE_SECONDS = 30
 
 # How long to wait after arriving in the Roundtable Hold before granting Murk/Sovereign Sigils -
 # a margin past the load, same caution as EXPEDITION_ENTRY_SETTLE_SECONDS.
@@ -145,6 +151,9 @@ HUB_ENTRY_SETTLE_SECONDS = 5
 # Minimum gap between two traps going off, so a backlog of received traps spreads out over the
 # Expedition instead of landing at once (a second rot trap on an already-rotting player does nothing).
 TRAP_COOLDOWN_SECONDS = 30
+# Minimum gap between two attempts to raise the player's level - only matters if the game doesn't
+# take one, so a write that isn't landing can't fire every tick.
+LEVEL_FLOOR_RETRY_SECONDS = 10
 
 # slot_data key -> currency name (see game_data.CURRENCY_COUNTER_OFFSETS). Runes are granted
 # during an Expedition, the other two in the Roundtable Hold - see poll_loop.
@@ -313,6 +322,11 @@ class NightreignContext(CommonContext):
     _trap_worldchrman_slot: Optional[int]
     _trap_task: Optional[asyncio.Task]
     _last_trap_time: Optional[float]
+    progressive_levels: bool
+    progressive_flasks: bool
+    level_writer: Optional[NightreignLevelWriter]
+    _last_level_floor_attempt: Optional[float]
+    _flask_floor_applied: Optional[int]
     _worldchrman_slot: Optional[int]
     _hub_exit_time: Optional[float]
     _hub_entry_time: Optional[float]
@@ -394,6 +408,11 @@ class NightreignContext(CommonContext):
         self._trap_worldchrman_slot = None
         self._trap_task = None
         self._last_trap_time = None
+        self.progressive_levels = False
+        self.progressive_flasks = False
+        self.level_writer = None
+        self._last_level_floor_attempt = None
+        self._flask_floor_applied = None
         self._worldchrman_slot = None
         self._hub_exit_time = None
         self._hub_entry_time = None
@@ -690,6 +709,8 @@ class NightreignContext(CommonContext):
             if self.slot_data.get("starting_murk", 0):
                 self.currency_items.add("Murk")
             self.status_traps = bool(self.slot_data.get("status_traps", False))
+            self.progressive_levels = bool(self.slot_data.get("progressive_levels", 0))
+            self.progressive_flasks = bool(self.slot_data.get("progressive_flasks", 0))
             self.otherworld_offerings = bool(self.slot_data.get("otherworld_offerings", False))
             # Accepted offerings are per-session, never carried over to another slot.
             self.offering_queue.clear()
@@ -769,6 +790,7 @@ class NightreignContext(CommonContext):
             self._ensure_animation_ready()
             self._ensure_currency_ready()
             self._ensure_trap_ready()
+            self._ensure_metaprogression_ready()
             self._ensure_all_bosses_unlock_ready()
 
         if cmd == "ReceivedItems":
@@ -1270,9 +1292,10 @@ class NightreignContext(CommonContext):
 
     def _receives_in_run_items(self) -> bool:
         """True if anything is delivered during an Expedition (and so needs _hub_exit_time's
-        settle window tracked) - weapon/talisman drops, Runes, or traps."""
+        settle window tracked) - weapon/talisman drops, Runes, traps, or Progressive Level/Flask."""
         return (self.randomize_weapons or self.randomize_talismans
-                or "Runes" in self.currency_items or self.status_traps)
+                or "Runes" in self.currency_items or self.status_traps
+                or self.progressive_levels or self.progressive_flasks)
 
     def _ensure_currency_ready(self) -> None:
         """Same "build once both an option and the game connection are known" shape as
@@ -1445,6 +1468,76 @@ class NightreignContext(CommonContext):
         if self.overlay is not None:
             self._show_toast(text, style="death_link", duration=DEATH_LINK_TOAST_SECONDS)
 
+    # --- Metaprogression (Progressive Level / Progressive Flask) ---
+
+    def _ensure_metaprogression_ready(self) -> None:
+        """Same "build once both an option and the game connection are known" shape as
+        _ensure_currency_ready. Only the level needs a resolved function - max flasks are a plain
+        byte write."""
+        if not self.progressive_levels or not self.reader.connected or self.level_writer is not None:
+            return
+        try:
+            func_addr = self.reader.resolve_set_level_target()
+        except PointerNotFoundError as e:
+            logger.error("Progressive Level write path unavailable (%s) - your level won't be "
+                         "raised this session, the read-only tracker is unaffected.", e)
+            return
+        self.level_writer = NightreignLevelWriter(self.reader.pm, func_addr)
+        logger.info("Progressive Level writer resolved.")
+
+    def _received_count(self, item_name: str) -> int:
+        return sum(1 for i in self.items_received if lookup_id_to_name.get(i.item) == item_name)
+
+    async def _apply_metaprogression_floors(self) -> None:
+        """Raises the player's level and max flask charges to the floors this slot's received
+        Progressive Level/Flask copies set (see game_data.level_floor/max_flask_floor). Only ever
+        raises, so natural level-ups and flask pickups above the floor still count. Level is
+        re-checked every tick, since it can drop mid-run; max flasks never drop, so they're only
+        written once per Expedition (again if a new Progressive Flask arrives mid-run). A read of
+        0 means PlayerGameData isn't populated yet and is skipped, never "raised"."""
+        player_data = self.reader.read_player_data_base()
+        if player_data is None:
+            return
+
+        now = time.monotonic()
+        if self.level_writer is not None and (
+            self._last_level_floor_attempt is None
+            or now - self._last_level_floor_attempt >= LEVEL_FLOOR_RETRY_SECONDS
+        ):
+            level = self.reader.read_player_data_uint(PLAYER_LEVEL_OFFSET)
+            floor = level_floor(self._received_count(PROGRESSIVE_LEVEL))
+            if level and level < floor:
+                self._last_level_floor_attempt = now
+                ok = await asyncio.get_running_loop().run_in_executor(
+                    None, self.level_writer.set_level, player_data, floor
+                )
+                if ok:
+                    self._report_floor("level", level, floor, f"Level raised to {floor}")
+
+        if self.progressive_flasks:
+            floor = max_flask_floor(self._received_count(PROGRESSIVE_FLASK))
+            if self._flask_floor_applied is None or self._flask_floor_applied < floor:
+                flasks = self.reader.read_player_data_ubyte(MAX_FLASK_OFFSET)
+                if not flasks:
+                    return
+                if flasks >= floor:
+                    self._flask_floor_applied = floor
+                elif set_max_flasks(self.reader.pm, player_data + MAX_FLASK_OFFSET, floor):
+                    self._flask_floor_applied = floor
+                    self._report_floor("max_flasks", flasks, floor, f"Max flasks raised to {floor}")
+
+    def _report_floor(self, stat: str, before: int, after: int, toast: str) -> None:
+        self._append_event({
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "type": "metaprogression_floor",
+            "stat": stat,
+            "before": before,
+            "after": after,
+        })
+        logger.info("Raised %s from %s to %s.", stat, before, after)
+        if self.overlay is not None:
+            self._show_toast(toast)
+
     # --- Per-run local state file ---
     # One file per AP world/slot (keyed by seed + slot name), so switching multiworld games
     # never mixes up which locations were sent. Also logs wins and unresolved boss_id detections.
@@ -1584,6 +1677,9 @@ class NightreignContext(CommonContext):
                     self._currency_worldchrman_slot = None
                     self.speffect_writer = None
                     self._trap_worldchrman_slot = None
+                    self.level_writer = None
+                    self._last_level_floor_attempt = None
+                    self._flask_floor_applied = None
                     self._worldchrman_slot = None
                     self._hub_exit_time = None
                     self._hub_entry_time = None
@@ -1609,6 +1705,7 @@ class NightreignContext(CommonContext):
                             self._ensure_animation_ready()
                             self._ensure_currency_ready()
                             self._ensure_trap_ready()
+                            self._ensure_metaprogression_ready()
                             self._ensure_all_bosses_unlock_ready()
                         else:
                             await asyncio.sleep(RECONNECT_INTERVAL)
@@ -1731,6 +1828,8 @@ class NightreignContext(CommonContext):
                     if in_hub:
                         self._hub_exit_time = None
                         self._locked_run_drop_withheld_warned = False
+                        # Every Expedition starts back at the game's own max flasks.
+                        self._flask_floor_applied = None
                     elif in_hub is False and self._hub_exit_time is None:
                         self._hub_exit_time = time.monotonic()
 
@@ -1814,6 +1913,9 @@ class NightreignContext(CommonContext):
                     # Traps aren't rewards, so unlike drops below they still go off on a locked run.
                     if self.status_traps:
                         self._maybe_start_trap()
+                    # Nothing is spent raising level/flasks, so this also applies on a locked run.
+                    if self.progressive_levels or self.progressive_flasks:
+                        await self._apply_metaprogression_floors()
                     self._offering_run_locked = self._current_run_is_locked()
                     if self._offering_run_locked:
                         # Don't spend an earned weapon/talisman drop on a run that's on a
@@ -1949,8 +2051,7 @@ class NightreignContext(CommonContext):
 
     async def _send_death_link(self) -> None:
         name = self.player_names.get(self.slot, self.auth or "Someone")
-        verb = "went down" if self.death_link_mode == "downed" else "died"
-        await self.send_death(f"{name} {verb} in Elden Ring Nightreign.")
+        await self.send_death(f"{name} succumbed to the night.")
         if self.overlay is not None:
             self._show_toast("\u2620 DeathLink sent", style="death_link")
 

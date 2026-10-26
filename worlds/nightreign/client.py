@@ -1158,7 +1158,7 @@ class NightreignContext(CommonContext):
 
     def _show_toast(self, text: str, style: str = "item",
                     duration: float = TOAST_DURATION_SECONDS) -> None:
-        """Arms the overlay's center-top toast for TOAST_DURATION_SECONDS. Timing lives here
+        """Arms the overlay's toast for `duration` seconds. Timing lives here
         (asyncio side), not in overlay.py - poll_loop's per-tick overlay update re-passes this
         same text on every tick until the expiry it set has passed, then lets it go back to None,
         so the Tk thread just displays whatever it's handed rather than running its own clock."""
@@ -1962,8 +1962,7 @@ class NightreignContext(CommonContext):
                     character = self.reader.read_character_class_name()
                     everdark = self.reader.read_everdark_flag()
 
-                    # Center-top "Weapon/Talisman received" toast - _show_toast() sets the expiry once
-                    # on a successful drop; every tick until it passes re-sends the same text so the
+                    # Item/DeathLink toast - _show_toast() sets the expiry once when it's armed; every tick until it passes re-sends the same text so the
                     # Tk thread keeps showing it, and once passed this clears it back to None.
                     toast_text = None
                     if self._toast_expiry is not None:
@@ -2051,7 +2050,7 @@ class NightreignContext(CommonContext):
 
     async def _send_death_link(self) -> None:
         name = self.player_names.get(self.slot, self.auth or "Someone")
-        await self.send_death(f"{name} succumbed to the night.")
+        await self.send_death(f"{name} fell to the night.")
         if self.overlay is not None:
             self._show_toast("\u2620 DeathLink sent", style="death_link")
 

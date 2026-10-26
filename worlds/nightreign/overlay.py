@@ -9,17 +9,17 @@ it resolved to, detected character) - added to help diagnose reports of wins tha
 check, and shown in both the hub and an active Expedition since a character-recognition bug tied
 to cosmetic skins turned out to need comparing readings on both sides of that boundary.
 
-A brief "Weapon received"/"Talisman received" toast, center-top, on a successful
-randomize_weapons/randomize_talismans drop (see client.py's _show_toast). It isn't mutually
-exclusive with the debug panel, so it gets its own window. A full-client-area single window that
-tried to host several panels at once was attempted and reverted (see project history) after it
-broke mouse input in the game entirely; every panel here stays a small, fixed-size window that
-only ever moves, never resizes to cover more of the screen, to sidestep that class of bug.
+A brief toast for received items ("Weapon received", currency, floors, ...) - see client.py's
+_show_toast. It isn't mutually exclusive with the debug panel, so it gets its own window. A
+full-client-area single window that tried to host several panels at once was attempted and
+reverted (see project history) after it broke mouse input in the game entirely; every panel here
+stays a small window that only ever moves or shrinks to its text, never resizes to cover more of
+the screen, to sidestep that class of bug.
 
-The same toast window doubles as the received-DeathLink alert (toast_style "death_link"): red text
-on a solid dark panel with a red border, sized to its text, and dropped to TOAST_DEATH_LINK_Y of
-the game window's height so it clears the compass - the look the user approved live via
-nightreign_spike/player_down_watch.py's mock. Still a small text-sized window, not a full-area one.
+Every toast is a solid dark panel with a colored border, sized to its text, and dropped to TOAST_Y
+of the game window's height so it clears the compass - the look the user approved live for
+DeathLink via nightreign_spike/player_down_watch.py's mock. Item toasts are blue (toast_style
+"item"); the same window doubles as the DeathLink alert in red (toast_style "death_link").
 
 Draws an external transparent window on top of the game (chroma-key transparency via tkinter's
 -transparentcolor, Windows-only) rather than hooking the game's own DirectX render pipeline -
@@ -48,13 +48,13 @@ WS_EX_TRANSPARENT = 0x00000020
 WS_EX_TOOLWINDOW = 0x00000080  # keep it off the taskbar/alt-tab list
 LWA_COLORKEY = 0x00000001
 
-# toast_style -> (text color, panel color or None for the transparent background, border color)
+# toast_style -> (text color, panel color, border color)
 TOAST_STYLES = {
-    "item": ("#ffd75f", None, None),
+    "item": ("#6bb8ff", "#0c121a", "#3070b0"),
     "death_link": ("#ff6b6b", "#1a0c0c", "#b03030"),
 }
-# The DeathLink toast's top edge, as a fraction of the game window's height.
-TOAST_DEATH_LINK_Y = 0.14
+# The toast's top edge, as a fraction of the game window's height.
+TOAST_Y = 0.14
 
 user32 = ctypes.windll.user32
 
@@ -165,8 +165,6 @@ class NightreignOverlay:
     _BG = "#0a0a0a"  # chroma-keyed transparent background - anything drawn stays opaque
     _PANEL_WIDTH = 280
     _PANEL_HEIGHT = 220
-    _TOAST_WIDTH = 280
-    _TOAST_HEIGHT = 40
     _INSET = 20
 
     def __init__(self, pid: int):
@@ -217,12 +215,11 @@ class NightreignOverlay:
         toast_root.attributes("-topmost", True)
         toast_root.configure(bg=self._BG)
         toast_root.attributes("-transparentcolor", self._BG)
-        toast_root.geometry(f"{self._TOAST_WIDTH}x{self._TOAST_HEIGHT}+40+40")
+        toast_root.geometry("+40+40")  # sized to its text on show - see _show_toast
 
         toast_label = tk.Label(
             toast_root,
             text="",
-            fg="#ffd75f",
             bg=self._BG,
             font=("Segoe UI", 13, "bold"),
             justify="center",
@@ -282,38 +279,25 @@ class NightreignOverlay:
         if show_toast:
             self._toast_root.deiconify()
             toast_label.configure(text=toast_text)
-            if toast_style == "death_link":
-                self._show_panel_toast(toast_label, game_hwnd, toast_style)
-            else:
-                self._style_toast(toast_label, toast_style)
-                self._toast_root.geometry(f"{self._TOAST_WIDTH}x{self._TOAST_HEIGHT}")
-                self._reposition(
-                    self._toast_root, game_hwnd, self._TOAST_WIDTH, self._TOAST_HEIGHT, corner="top-center"
-                )
+            self._show_toast(toast_label, game_hwnd, toast_style)
         else:
             self._toast_root.withdraw()
 
         self._root.after(250, self._tick, debug_label, toast_label)
 
-    def _style_toast(self, toast_label: tk.Label, toast_style: str) -> None:
-        fg, panel, border = TOAST_STYLES.get(toast_style, TOAST_STYLES["item"])
-        if panel is None:
-            toast_label.configure(fg=fg, bg=self._BG, padx=0, pady=0, highlightthickness=0)
-        else:
-            toast_label.configure(fg=fg, bg=panel, padx=18, pady=8, highlightthickness=2,
-                                  highlightbackground=border, highlightcolor=border)
-
-    def _show_panel_toast(self, toast_label: tk.Label, game_hwnd: int, toast_style: str) -> None:
-        """Sizes the toast window to its label and centers it TOAST_DEATH_LINK_Y down the game
+    def _show_toast(self, toast_label: tk.Label, game_hwnd: int, toast_style: str) -> None:
+        """Styles the toast, sizes its window to the label and centers it TOAST_Y down the game
         window - the solid panel would otherwise show as a fixed-width bar around short text."""
-        self._style_toast(toast_label, toast_style)
+        fg, panel, border = TOAST_STYLES.get(toast_style, TOAST_STYLES["item"])
+        toast_label.configure(fg=fg, bg=panel, padx=18, pady=8, highlightthickness=2,
+                              highlightbackground=border, highlightcolor=border)
         client_rect = _get_client_rect_on_screen(game_hwnd)
         if client_rect is None:
             return
         left, top, width, height = client_rect
         label_width, label_height = toast_label.winfo_reqwidth(), toast_label.winfo_reqheight()
         x = left + (width - label_width) // 2
-        y = top + int(height * TOAST_DEATH_LINK_Y)
+        y = top + int(height * TOAST_Y)
         self._toast_root.geometry(f"{label_width}x{label_height}+{x}+{y}")
 
     @staticmethod
@@ -322,12 +306,11 @@ class NightreignOverlay:
         if client_rect is None:
             return
         left, top, width, height = client_rect
-        # Anchored to a fixed corner (or top-center, for the toast) of the game window with a
-        # fixed inset - v1 doesn't track the native Expeditions list's own position. Every panel
-        # is a fixed size (see module docstring); this only ever moves a window, never resizes one.
+        # Anchored to a fixed corner of the game window with a fixed inset - v1 doesn't track the
+        # native Expeditions list's own position. This only ever moves a window, never resizes one.
         inset = NightreignOverlay._INSET
         if corner == "bottom-right":
             x, y = left + width - panel_width - inset, top + height - panel_height - inset
-        else:  # top-center
-            x, y = left + (width - panel_width) // 2, top + inset
+        else:
+            raise ValueError(f"unsupported corner: {corner}")
         window.geometry(f"+{x}+{y}")

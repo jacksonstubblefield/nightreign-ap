@@ -175,6 +175,12 @@ CHARACTER_EVENT_FLAGS = {
     "Undertaker": 6039,
 }
 
+# The Forsaken Hollows characters. On a fresh save their flag only sticks once a save is actually
+# loaded into the Roundtable Hold (live-confirmed 2026-10-26: SetEventFlag(6038, 1) there unlocks
+# Scholar immediately) - a write from the main menu, or before the save finishes loading, is lost,
+# so client.py re-fires these on every hub visit rather than trusting the one-shot sync.
+DLC_CHARACTERS = ["Scholar", "Undertaker"]
+
 # Every character can be gated - unlike ACCESS_NIGHTLORDS, there's no Tricephalos-style "no flag"
 # exception, since all 10 characters have a confirmed individually-addressable flag above.
 ACCESS_CHARACTERS = list(CHARACTERS)

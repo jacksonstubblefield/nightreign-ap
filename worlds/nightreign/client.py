@@ -108,10 +108,10 @@ from CommonClient import (ClientCommandProcessor, CommonContext, get_base_parser
 from NetUtils import ClientStatus
 
 from .game_data import (ACCESS_CHARACTERS, ACCESS_ITEM_EVENT_FLAGS, ACCESS_NIGHTLORDS,
-                        CHARACTER_ACCESS_EVENT_FLAGS, CURRENCY_BUNDLES,
+                        CHARACTER_ACCESS_EVENT_FLAGS, CHARACTER_EVENT_FLAGS, CURRENCY_BUNDLES,
                         CURRENCY_COUNTER_OFFSETS, CURRENCY_GRANT_MAX,
                         DAY_PHASE_DAY_2, DAY_PHASE_DAY_3, DAY_PHASE_NIGHT_1, DAY_PHASE_NIGHT_2, EVERDARK_NIGHTLORDS,
-                        CHECKS_PER_BOSS_DEFAULT, MAX_FLASK_OFFSET, PLAYER_LEVEL_OFFSET,
+                        CHECKS_PER_BOSS_DEFAULT, DLC_CHARACTERS, MAX_FLASK_OFFSET, PLAYER_LEVEL_OFFSET,
                         PROGRESSIVE_FLASK, PROGRESSIVE_LEVEL, STATUS_TRAPS, TRAP_APPLY_INTERVAL,
                         bonus_indices, currency_bundle_names, is_flying_animation,
                         is_nightlord_kill_tick, level_floor, max_flask_floor,
@@ -333,6 +333,9 @@ class NightreignContext(CommonContext):
     _all_bosses_unlock_addr: Optional[int]
     _all_bosses_worldchrman_slot: Optional[int]
     _all_bosses_unlocked_this_hub: bool
+    _dlc_character_worldchrman_slot: Optional[int]
+    _dlc_character_hub_entry_time: Optional[float]
+    _dlc_character_flags_set_this_hub: bool
 
     _last_pulse: Optional[int]
     _synced_flags: set
@@ -419,6 +422,9 @@ class NightreignContext(CommonContext):
         self._all_bosses_unlock_addr = None
         self._all_bosses_worldchrman_slot = None
         self._all_bosses_unlocked_this_hub = False
+        self._dlc_character_worldchrman_slot = None
+        self._dlc_character_hub_entry_time = None
+        self._dlc_character_flags_set_this_hub = False
         self._last_pulse = None
         self._synced_flags = set()
         self._delivered_weapon_keys = set()
@@ -792,6 +798,7 @@ class NightreignContext(CommonContext):
             self._ensure_trap_ready()
             self._ensure_metaprogression_ready()
             self._ensure_all_bosses_unlock_ready()
+            self._ensure_dlc_character_unlock_ready()
 
         if cmd == "ReceivedItems":
             if self.gate_boss_access or self.gate_character_access:
@@ -1036,6 +1043,40 @@ class NightreignContext(CommonContext):
             self.unlock_all_bosses_in_game = False
             self._all_bosses_unlock_addr = None
             self._all_bosses_worldchrman_slot = None
+
+    def _ensure_dlc_character_unlock_ready(self) -> None:
+        """Resolves a dedicated WorldChrMan pointer slot for _set_dlc_character_flags' "save
+        actually loaded" check, once gate_character_access and the game connection are known. Same
+        race/no-op-once-ready shape as _ensure_all_bosses_unlock_ready, and its own resolve for the
+        same reason. Requires self.writer already built (see _ensure_gating_ready)."""
+        if (not self.gate_character_access or not self.reader.connected
+                or self.writer is None or self._dlc_character_worldchrman_slot is not None
+                or not any(name in self.included_characters for name in DLC_CHARACTERS)):
+            return
+        try:
+            self._dlc_character_worldchrman_slot = self.reader.resolve_current_animation_target()
+        except PointerNotFoundError as e:
+            logger.error("DLC character unlock path unavailable (%s) - Scholar/Undertaker Access "
+                         "won't be re-applied in the Roundtable Hold this session.", e)
+
+    async def _set_dlc_character_flags(self) -> bool:
+        """Fires the unlock flag of every owned DLC character (see game_data.DLC_CHARACTERS) -
+        called once per hub visit with a save loaded, since _sync_event_flags' one-shot write is
+        lost if it lands before the save is loaded. Re-setting an already-set flag is harmless.
+        Returns True only if every write was dispatched, so a failure retries next tick."""
+        owned_names = self._owned_item_names()
+        loop = asyncio.get_running_loop()
+        all_ok = True
+        for name in DLC_CHARACTERS:
+            if f"{name} Character Access" not in owned_names:
+                continue
+            flag = CHARACTER_EVENT_FLAGS[name]
+            ok = await loop.run_in_executor(None, self.writer.set_event_flag, flag, True)
+            if ok:
+                logger.info("SetEventFlag(%s, 1) re-applied for %s in the Roundtable Hold.",
+                            flag, name)
+            all_ok = all_ok and ok
+        return all_ok
 
     # --- Randomized item-drop write path (weapons and talismans) ---
     # Off unless randomize_weapons/randomize_talismans is on. A received item is rolled into a
@@ -1686,6 +1727,9 @@ class NightreignContext(CommonContext):
                     self._all_bosses_unlock_addr = None
                     self._all_bosses_worldchrman_slot = None
                     self._all_bosses_unlocked_this_hub = False
+                    self._dlc_character_worldchrman_slot = None
+                    self._dlc_character_hub_entry_time = None
+                    self._dlc_character_flags_set_this_hub = False
                     self._locked_boss_warned = False
                     self._locked_character_warned = False
                     self._locked_run_drop_withheld_warned = False
@@ -1707,6 +1751,7 @@ class NightreignContext(CommonContext):
                             self._ensure_trap_ready()
                             self._ensure_metaprogression_ready()
                             self._ensure_all_bosses_unlock_ready()
+                            self._ensure_dlc_character_unlock_ready()
                         else:
                             await asyncio.sleep(RECONNECT_INTERVAL)
                             continue
@@ -1793,6 +1838,23 @@ class NightreignContext(CommonContext):
                     if self.reader.is_save_loaded(self._all_bosses_worldchrman_slot):
                         self._all_bosses_unlocked_this_hub = self.writer.set_all_bosses_unlocked(
                             self._all_bosses_unlock_addr, True
+                        )
+
+                if self.writer is not None and self._dlc_character_worldchrman_slot is not None:
+                    # DLC characters' flags only stick once a save is loaded (see
+                    # game_data.DLC_CHARACTERS), so re-fire them once per hub visit, after the same
+                    # settle margin as Murk/Sigils and the same is_save_loaded() main-menu guard.
+                    if in_hub is False:
+                        self._dlc_character_hub_entry_time = None
+                        self._dlc_character_flags_set_this_hub = False
+                    elif in_hub and self._dlc_character_hub_entry_time is None:
+                        self._dlc_character_hub_entry_time = time.monotonic()
+                    elif (in_hub and not self._dlc_character_flags_set_this_hub
+                          and time.monotonic() - self._dlc_character_hub_entry_time
+                          >= HUB_ENTRY_SETTLE_SECONDS
+                          and self.reader.is_save_loaded(self._dlc_character_worldchrman_slot)):
+                        self._dlc_character_flags_set_this_hub = (
+                            await self._set_dlc_character_flags()
                         )
 
                 if self.gate_boss_access:

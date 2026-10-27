@@ -23,7 +23,10 @@ for playable characters - if you turn it on, start from a save where not every c
 You might see that you have all bosses unlocked immediately when you go to launch an expedition. This is expected.
 The client will only send checks for bosses that you have unlocked. So if you only start with Libra but see every single
 boss, don't fret. It's working as expected. The other bosses are selectable and you can still do runs on them, but in 
-the eyes of the AP, you have not yet received access and will not send checks. This is exactly how characters work as well.
+the eyes of the AP, you have not yet received access and will not send checks. So long as you only do runs on bosses
+you have unlocked with characters that you have unlocked, then you should be sending checks!
+
+This is exactly how characters work as well.
 
 ## DLC Characters
 DLC characters aren't going to show up in the list of available characters by default. You have to go through the vanilla route of actually speaking to them. However, the client should still trigger the event where you fight the Dreglord with the DLC characters which opens up the room with them in it (where you can then recruit them). If the Iron Menial isn't coming up to you to tell you about the small jar, attempt quitting out to main menu then continuing your save file. That should trigger the event. If not, you can yell at me in the discord.

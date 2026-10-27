@@ -150,7 +150,7 @@ class GateCharacterAccess(Toggle):
 class StartingCharacter(Choice):
     """If character access is gated, this is the character you start with.
 
-    DLC characters are a bit finnicky, so read setup_en.md before choosing random or DLC characters.
+    DLC characters are a bit finnicky, so read setup.md before choosing random or DLC characters.
     """
 
     display_name = "Starting Character"

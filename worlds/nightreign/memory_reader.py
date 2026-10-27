@@ -339,7 +339,7 @@ class NightreignMemoryReader:
             raise EACDetectedError(
                 f"EasyAntiCheat is running ({eac_process}) - the game was launched through "
                 "Steam's protected launcher. Launch it offline with Anti-Cheat disabled before "
-                "using this client - see docs/setup_en.md."
+                "using this client - see docs/setup.md."
             )
 
         try:

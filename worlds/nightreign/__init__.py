@@ -33,16 +33,16 @@ icon_paths["nightreign"] = f"ap:{__name__}/data/image.png"
 
 
 class NightreignWeb(WebWorld):
-    setup_en = Tutorial(
+    setup = Tutorial(
         "Multiworld Setup Guide",
         "A guide to setting up the Archipelago Elden Ring Nightreign tracker.",
         "English",
-        "setup_en.md",
-        "setup/en",
+        "setup.md",
+        "setup",
         ["jrstubb"],
     )
 
-    tutorials = [setup_en]
+    tutorials = [setup]
     option_groups = option_groups
 
 

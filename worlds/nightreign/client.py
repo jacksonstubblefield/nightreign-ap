@@ -228,6 +228,15 @@ class NightreignCommandProcessor(ClientCommandProcessor):
         self.output(f"DeathLink: {mode}")
         return True
 
+    def _cmd_unlock(self) -> bool:
+        """Re-apply every unlock you've received (bosses, characters - DLC ones included). Use it
+        from the tutorial or the Roundtable Hold if something you own isn't selectable."""
+        async def run() -> None:
+            logging.getLogger("Client").info(await self.ctx.reapply_unlocks())
+
+        asyncio.create_task(run())
+        return True
+
     def _cmd_offerings(self) -> bool:
         """List the Otherworld Offerings you're holding."""
         if not self.ctx.otherworld_offerings:
@@ -615,10 +624,25 @@ class NightreignContext(CommonContext):
                 self.characters_section = TrackerSection("Characters", set())
                 self.wins_section = TrackerSection("Win Count", set())
                 self.goal_section = TrackerSection("Goal", set())
-                unlocks = MDBoxLayout(orientation="horizontal")
-                unlocks.add_widget(scrolled(self.bosses_section))
-                unlocks.add_widget(scrolled(self.goal_section, self.characters_section,
+                columns = MDBoxLayout(orientation="horizontal")
+                columns.add_widget(scrolled(self.bosses_section))
+                columns.add_widget(scrolled(self.goal_section, self.characters_section,
                                             self.wins_section))
+
+                async def reapply() -> None:
+                    logging.getLogger("Client").info(await ctx.reapply_unlocks())
+
+                # Same backup as /unlock, for when something received isn't selectable in-game.
+                actions = MDBoxLayout(orientation="horizontal", adaptive_height=True,
+                                      padding=(dp(8), dp(8), dp(8), 0), spacing=dp(8))
+                actions.add_widget(button("Re-apply unlocks",
+                                          lambda: asyncio.create_task(reapply())))
+                actions.add_widget(MDLabel(
+                    text="Received something that isn't selectable? Press this in the Roundtable "
+                         "Hold.", adaptive_height=True, pos_hint={"center_y": 0.5}))
+                unlocks = MDBoxLayout(orientation="vertical")
+                unlocks.add_widget(actions)
+                unlocks.add_widget(columns)
                 self.add_client_tab("Unlocks", unlocks)
                 # Added once a slot with otherworld_offerings on connects - see refresh_offerings.
                 self.offerings = None
@@ -875,17 +899,20 @@ class NightreignContext(CommonContext):
             "goal_progress": tracker.goal_progress(self.goal_groups, sent),
         }
 
+    def _owned_unlock_flags(self) -> dict:
+        """{EventFlag: owned Access item names it unlocks} for every Access item this slot owns
+        that has a flag - several names can share one (see EVENT_FLAG_SECONDARY_BOSSES)."""
+        owned_names = self._owned_item_names()
+        flags = {}
+        for name, flag in (*ACCESS_ITEM_EVENT_FLAGS.items(), *CHARACTER_ACCESS_EVENT_FLAGS.items()):
+            if name in owned_names:
+                flags.setdefault(flag, []).append(name)
+        return flags
+
     async def _sync_event_flags(self) -> None:
         if not (self.gate_boss_access or self.gate_character_access) or self.writer is None:
             return
-        owned_names = self._owned_item_names()
-        needed_flags = {
-            flag for name, flag in ACCESS_ITEM_EVENT_FLAGS.items() if name in owned_names
-        }
-        needed_flags |= {
-            flag for name, flag in CHARACTER_ACCESS_EVENT_FLAGS.items() if name in owned_names
-        }
-        needed_flags -= self._synced_flags
+        needed_flags = set(self._owned_unlock_flags()) - self._synced_flags
         if not needed_flags:
             return
         loop = asyncio.get_running_loop()
@@ -1077,6 +1104,49 @@ class NightreignContext(CommonContext):
                             flag, name)
             all_ok = all_ok and ok
         return all_ok
+
+    async def reapply_unlocks(self) -> str:
+        """Manual backup behind /unlock and the Unlocks tab's button: re-fires every unlock flag
+        this slot owns, ignoring _synced_flags, plus unlock_all_bosses_in_game's menu patch - for
+        when an earlier write didn't stick (e.g. a DLC character missing from the Roundtable Hold,
+        see game_data.DLC_CHARACTERS). Refuses at the main menu, where writes are lost. Returns a
+        one-line result for the caller to show."""
+        if not self.reader.connected:
+            return "Not attached to nightreign.exe yet - launch the game first."
+        if self.writer is None:
+            return ("Nothing to unlock - connect to a slot with gate_boss_access, "
+                    "gate_character_access or unlock_all_bosses_in_game on.")
+        loop = asyncio.get_running_loop()
+        worldchrman_slot = self._dlc_character_worldchrman_slot or self._all_bosses_worldchrman_slot
+        if worldchrman_slot is None:
+            try:
+                worldchrman_slot = await loop.run_in_executor(
+                    None, self.reader.resolve_current_animation_target
+                )
+            except PointerNotFoundError as e:
+                return f"Couldn't tell whether a save is loaded ({e}) - nothing was written."
+        if not self.reader.is_save_loaded(worldchrman_slot):
+            return ("Load your save first (the tutorial or the Roundtable Hold) - unlocks written "
+                    "from the main menu don't stick.")
+
+        applied, failed = [], []
+        if self.gate_boss_access or self.gate_character_access:
+            flags = self._owned_unlock_flags()
+            self._synced_flags -= set(flags)
+            await self._sync_event_flags()
+            for flag, names in sorted(flags.items()):
+                (applied if flag in self._synced_flags else failed).extend(names)
+        if self.unlock_all_bosses_in_game and self._all_bosses_unlock_addr is not None:
+            ok = self.writer.set_all_bosses_unlocked(self._all_bosses_unlock_addr, True)
+            self._all_bosses_unlocked_this_hub = ok
+            (applied if ok else failed).append("All bosses selectable")
+
+        if not applied and not failed:
+            return "Nothing to unlock yet - no Access items with an in-game unlock received."
+        result = f"Re-applied: {', '.join(applied)}." if applied else ""
+        if failed:
+            result += f" Failed (game busy - try again in a moment): {', '.join(failed)}."
+        return result.strip()
 
     # --- Randomized item-drop write path (weapons and talismans) ---
     # Off unless randomize_weapons/randomize_talismans is on. A received item is rolled into a

@@ -28,8 +28,10 @@ you have unlocked with characters that you have unlocked, then you should be sen
 
 This is exactly how characters work as well.
 
-## DLC Characters
-DLC characters aren't going to show up in the list of available characters by default. You have to go through the vanilla route of actually speaking to them. However, the client should still trigger the event where you fight the Dreglord with the DLC characters which opens up the room with them in it (where you can then recruit them). If the Iron Menial isn't coming up to you to tell you about the small jar, attempt quitting out to main menu then continuing your save file. That should trigger the event. If not, you can yell at me in the discord.
+## Something You Received Isn't Unlocked
+If a boss or character you've received (including a DLC character like Scholar or Undertaker) isn't selectable,
+go to the Roundtable Hold and press "Re-apply unlocks" on the client's Unlocks tab, or type `/unlock`. It doesn't
+work from the main menu - your save has to be loaded first.
 
 ## Playing Offline
 The game must be launched offline or the client will refuse to open. Selecting the "play offline" option within the menu is insufficient - since this implementation reads and writes data, it can only be play with EAC disabled. 

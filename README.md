@@ -2,7 +2,7 @@
 
 This is an [Archipelago](https://archipelago.gg/) implementation for **Elden Ring Nightreign**, currently in
 **beta**. See [Overview](worlds/nightreign/docs/en_Nightreign.md) for what the
-client does, and [setup](worlds/nightreign/docs/setup_en.md) for setup instructions.  Check out our [roadmap](worlds/nightreign/docs/roadmap.md).
+client does, and [setup](worlds/nightreign/docs/setup.md) for setup instructions.  Check out our [roadmap](worlds/nightreign/docs/roadmap.md).
 
 ## Status
 

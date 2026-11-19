@@ -195,7 +195,16 @@ def goal_rows(
     return rows
 
 
-def goal_progress(goal_groups: list, sent: set) -> tuple[int, int]:
-    """(groups satisfied, total groups) - the same test as client.py's _goal_complete."""
-    done = sum(1 for group in goal_groups if any(i in sent for i in group))
+def goal_progress(goal_groups: list, earned: set) -> tuple[int, int]:
+    """(groups satisfied, total groups). earned must be the locations this client sent itself
+    (client.py's checked_location_ids), not the server's checked set: another player's collect
+    marks this slot's locations checked server-side without any kill, and that must not count
+    toward the goal."""
+    done = sum(1 for group in goal_groups if any(i in earned for i in group))
     return done, len(goal_groups)
+
+
+def goal_complete(goal_groups: list, earned: set) -> bool:
+    """Every goal group satisfied - see goal_progress for what earned must be."""
+    done, total = goal_progress(goal_groups, earned)
+    return done == total

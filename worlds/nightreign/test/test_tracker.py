@@ -139,3 +139,11 @@ class TestGoalRows(unittest.TestCase):
         rows = tracker.goal_rows(groups, set(), sent, True, False)
         self.assertEqual(self._shape(rows), [("Tricephalos", LOCKED, []), ("Gaping Jaw", DONE, [])])
         self.assertEqual(tracker.goal_progress(groups, sent), (1, 2))
+
+    def test_goal_complete_needs_every_group_earned(self) -> None:
+        # Live report 2026-11-02: another player's auto-collect checked "Defeat Everdark
+        # Tricephalos" server-side with no kill. The client passes only its own sends here, so
+        # a collected id is simply absent from earned and must not finish the goal.
+        groups = [[self._id("Tricephalos")], [self._id("Everdark Tricephalos")]]
+        self.assertFalse(tracker.goal_complete(groups, {self._id("Tricephalos")}))
+        self.assertTrue(tracker.goal_complete(groups, {g[0] for g in groups}))

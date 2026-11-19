@@ -54,9 +54,10 @@ otherworld_offerings on, weapon/talisman drops and Runes are held as offerings u
 accepts them from the Offerings tab or with /accept - see offerings.py. With all four options off, received items
 have no in-game effect - the base CommonContext/CLI/GUI machinery just logs
 them, same as before any was added. Wins are detected via _trigger_win (at most once per
-Expedition) from two signals: primarily the buff-pick counter ticking in the Day 3 Nightlord arena
-(game_data.is_nightlord_kill_tick - the only signal Night Aspect produces), with
-read_outcome_pulse()'s rising edge as a fallback. When win_count_checks is on, every detected win
+Expedition) from three signals: primarily the buff-pick counter ticking in the Day 3 Nightlord arena
+(game_data.is_nightlord_kill_tick), with read_outcome_pulse()'s rising edge as a fallback. Night
+Aspect never fires the pulse, so its fallback is the save-persistent clear counter
+(game_data.is_night_aspect_clear). When win_count_checks is on, every detected win
 with a resolved boss_id increments a per-seed win counter persisted in the run state file (_open_run_state/
 _write_run_state), and crossing one of this slot's win_count_thresholds (from slot_data - see
 game_data.win_count_threshold_list/__init__.py's generate_early()) sends that "Win N Expeditions"
@@ -114,7 +115,8 @@ from .game_data import (ACCESS_CHARACTERS, ACCESS_ITEM_EVENT_FLAGS, ACCESS_NIGHT
                         CHECKS_PER_BOSS_DEFAULT, DLC_CHARACTERS, MAX_FLASK_OFFSET, PLAYER_LEVEL_OFFSET,
                         PROGRESSIVE_FLASK, PROGRESSIVE_LEVEL, STATUS_TRAPS, TRAP_APPLY_INTERVAL,
                         bonus_indices, currency_bundle_names, is_flying_animation,
-                        is_nightlord_kill_tick, level_floor, max_flask_floor,
+                        is_night_aspect_clear, is_nightlord_kill_tick, level_floor,
+                        max_flask_floor,
                         starting_free_characters, starting_free_everdark_nightlords,
                         starting_free_nightlords)
 from .death_link import DEATH_LINK_MODES, DeathLinkDetector
@@ -127,7 +129,8 @@ from .Locations import (location_name, location_name_boss_only, location_name_ev
                         location_name_everdark_boss_only, location_name_kill_bonus,
                         location_name_night1, location_name_night2, location_name_strong_reward,
                         location_name_to_id, location_name_weak_reward, location_name_win_count)
-from .memory_reader import EACDetectedError, NightreignMemoryReader, PointerNotFoundError
+from .memory_reader import (ARENA_CANDIDATE_OFFSETS, EACDetectedError, NightreignMemoryReader,
+                            PointerNotFoundError)
 from .memory_writer import (NightreignCurrencyWriter, NightreignItemDropWriter,
                             NightreignLevelWriter, NightreignMemoryWriter,
                             NightreignSpEffectWriter, set_max_flasks, set_player_hp)
@@ -842,12 +845,12 @@ class NightreignContext(CommonContext):
         # goal_groups (from slot_data) is a list of groups, each satisfied by ANY one of its
         # location ids being checked; the goal needs EVERY group satisfied. Falls back to "no
         # locations left to check" if slot_data has no goal_groups (e.g. a seed from before this).
+        # Only locations this client sent itself count: with collect on "auto", another player
+        # finishing marks every location of ours that holds their item as checked server-side,
+        # Defeat locations included, without any kill (live-reported 2026-11-02).
         if not self.goal_groups:
             return not self.missing_locations
-        return all(
-            any(location_id not in self.missing_locations for location_id in group)
-            for group in self.goal_groups
-        )
+        return tracker.goal_complete(self.goal_groups, self.checked_location_ids)
 
     async def _maybe_declare_goal(self) -> None:
         # No item/logic gating here (topology_present = False), so there's no CollectionState
@@ -894,9 +897,11 @@ class NightreignContext(CommonContext):
             "wins": tracker.win_count_rows(slot_locations, sent, self.win_count_thresholds),
             "win_count": self.win_count,
             "goal": self.goal,
-            "goal_rows": tracker.goal_rows(self.goal_groups, owned, sent, self.gate_boss_access,
-                                           self.gate_character_access),
-            "goal_progress": tracker.goal_progress(self.goal_groups, sent),
+            # The goal uses only our own sends (see _goal_complete) - a collected Defeat location
+            # stays gray in the Bosses list (nothing left to unlock) but not in the goal.
+            "goal_rows": tracker.goal_rows(self.goal_groups, owned, self.checked_location_ids,
+                                           self.gate_boss_access, self.gate_character_access),
+            "goal_progress": tracker.goal_progress(self.goal_groups, self.checked_location_ids),
         }
 
     def _owned_unlock_flags(self) -> dict:
@@ -1860,7 +1865,8 @@ class NightreignContext(CommonContext):
                         continue
 
                 # Fallback win signal - the primary one is the buff-pick counter's Nightlord-kill
-                # tick below, which also covers Night Aspect (this pulse never fires for it).
+                # tick below. This pulse never fires for Night Aspect, whose backup is the clear
+                # counter (_check_night_aspect_backup).
                 pulse = self.reader.read_outcome_pulse()
                 if pulse == 1 and self._last_pulse == 0:
                     await self._trigger_win("outcome pulse")
@@ -1884,6 +1890,9 @@ class NightreignContext(CommonContext):
                     self._win_handled_this_run = False
                     self._arena_trace = None
                 if in_hub is True and self._last_in_hub is False:
+                    # Last look before the arena trace closes, in case the counter's write landed
+                    # between the previous in-run tick and the hub flip.
+                    await self._check_night_aspect_backup()
                     self._report_arena_exit_without_win()
                 if in_hub is not None:
                     self._last_in_hub = in_hub
@@ -2023,7 +2032,14 @@ class NightreignContext(CommonContext):
                     # game_data.is_nightlord_kill_tick).
                     buff_raw = self.reader.read_buff_pick_count()
                     self._trace_arena(day_phase, buff_raw)
+                    await self._check_night_aspect_backup()
                     if buff_raw is not None:
+                        if (self._last_buff_pick_raw is not None
+                                and buff_raw != self._last_buff_pick_raw):
+                            # Logged all run, not just in the arena: a report whose log never shows
+                            # this line had a dead counter, i.e. no primary win signal.
+                            logger.info("Buff-pick counter %s -> %s (day phase %s).",
+                                        self._last_buff_pick_raw, buff_raw, day_phase)
                         if is_nightlord_kill_tick(self._last_buff_pick_raw, buff_raw, day_phase):
                             await self._trigger_win("buff-pick counter in the Nightlord arena")
                         if (self.strong_reward_checks and self._last_buff_pick_raw is not None
@@ -2325,27 +2341,64 @@ class NightreignContext(CommonContext):
         )
 
     def _trace_arena(self, day_phase: Optional[int], buff_raw: Optional[int]) -> None:
-        """Diagnostics only: records the win signals seen in the Day 3 Nightlord arena so a run
-        that ends there without a detected win (see _report_arena_exit_without_win) leaves enough
-        in the log/event file to tell which signal failed. Night Aspect's kill-tick trigger rests
-        on one live run, so this is what a failed report needs to come with."""
-        if day_phase != DAY_PHASE_DAY_3:
-            return
+        """Diagnostics only: records the win signals seen from Day 3 Nightlord-arena entry until
+        the hub, so a run that ends without a detected win (see _report_arena_exit_without_win)
+        leaves enough in the log/event file to tell which signal failed. Also logs every change of
+        memory_reader.ARENA_CANDIDATE_OFFSETS (unverified Night Aspect kill signals), and takes the
+        arena-entry baseline for the backup Night Aspect trigger (_check_night_aspect_backup).
+        Keeps watching after day_phase leaves Day 3: the kill-time writes may land after it."""
         if self._arena_trace is None:
+            if day_phase != DAY_PHASE_DAY_3:
+                return
             boss = self.reader.read_boss_id()
+            candidates = {offset: self.reader.read_gamedataman_ubyte(offset)
+                          for offset in ARENA_CANDIDATE_OFFSETS}
             self._arena_trace = {
                 "raw_boss_id": boss.raw, "boss": boss.name, "buff_picks_at_entry": buff_raw,
                 "buff_picks_last": buff_raw, "pulse_seen": False,
+                # None unless the boss is Night Aspect - the backup trigger only covers it.
+                "na_clear_baseline": (self.reader.read_night_aspect_clear_count()
+                                      if boss.name == "Night Aspect" else None),
+                "candidates_at_entry": {f"{o:#x}": v for o, v in candidates.items()},
+                "candidates_last": {f"{o:#x}": v for o, v in candidates.items()},
             }
-            logger.info("Entered the Nightlord arena (boss_id=%s, %s, buff_picks=%s).",
-                        boss.raw, boss.name or boss.status, buff_raw)
+            logger.info("Entered the Nightlord arena (boss_id=%s, %s, buff_picks=%s, "
+                        "GameDataMan candidates %s).", boss.raw, boss.name or boss.status, buff_raw,
+                        self._format_candidates(self._arena_trace["candidates_at_entry"]))
+            if buff_raw == 0:
+                logger.warning(
+                    "The buff-pick counter is still 0 in the Nightlord arena - normally the Night "
+                    "1/2 boss rewards have moved it by now, so its kill tick may not fire. The win "
+                    "falls back to the outcome pulse (Night Aspect: the clear counter).")
             return
         if buff_raw is not None and buff_raw != self._arena_trace["buff_picks_last"]:
-            logger.info("Nightlord arena: buff-pick counter %s -> %s.",
-                        self._arena_trace["buff_picks_last"], buff_raw)
             self._arena_trace["buff_picks_last"] = buff_raw
+        last = self._arena_trace["candidates_last"]
+        for offset in ARENA_CANDIDATE_OFFSETS:
+            key = f"{offset:#x}"
+            value = self.reader.read_gamedataman_ubyte(offset)
+            if value is not None and value != last[key]:
+                logger.info("Nightlord arena: GameDataMan+%s %s -> %s (day phase %s).",
+                            key, last[key], value, day_phase)
+                last[key] = value
         if self._last_pulse == 1:
             self._arena_trace["pulse_seen"] = True
+
+    @staticmethod
+    def _format_candidates(values: dict) -> str:
+        return " ".join(f"{key}={value}" for key, value in values.items())
+
+    async def _check_night_aspect_backup(self) -> None:
+        """Backup Night Aspect win trigger (game_data.is_night_aspect_clear). Night Aspect never
+        fires the outcome pulse, so without this its only signal is the buff-pick kill tick,
+        which a 2026-11-09 co-op host's log showed can stay at 0 for a whole run."""
+        trace = self._arena_trace
+        if trace is None or self._win_handled_this_run or trace["na_clear_baseline"] is None:
+            return
+        count = self.reader.read_night_aspect_clear_count()
+        if is_night_aspect_clear(trace["na_clear_baseline"], count):
+            await self._trigger_win(
+                f"Night Aspect clear counter {trace['na_clear_baseline']} -> {count} (backup)")
 
     def _report_arena_exit_without_win(self) -> None:
         if self._arena_trace is None or self._win_handled_this_run:
@@ -2354,9 +2407,12 @@ class NightreignContext(CommonContext):
         self._arena_trace = None
         logger.warning(
             "Left the Nightlord arena without detecting a win (boss_id=%s, buff_picks %s -> %s, "
-            "outcome pulse %s). If you won this fight, please report it with this log file.",
+            "outcome pulse %s, Night Aspect clear counter baseline %s, GameDataMan candidates "
+            "%s -> %s). If you won this fight, please report it with this log file.",
             trace["raw_boss_id"], trace["buff_picks_at_entry"], trace["buff_picks_last"],
-            "seen" if trace["pulse_seen"] else "never fired",
+            "seen" if trace["pulse_seen"] else "never fired", trace["na_clear_baseline"],
+            self._format_candidates(trace["candidates_at_entry"]),
+            self._format_candidates(trace["candidates_last"]),
         )
         self._append_event({
             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -2365,9 +2421,10 @@ class NightreignContext(CommonContext):
         })
 
     async def _trigger_win(self, source: str) -> None:
-        """Runs _handle_win at most once per Expedition. Two independent signals can report the
-        same win - the buff-pick counter's Nightlord-kill tick and, ~7s later, the outcome pulse -
-        and without this a normal win would double-increment win_count. Re-armed on Expedition
+        """Runs _handle_win at most once per Expedition. Several independent signals can report
+        the same win - the buff-pick counter's Nightlord-kill tick, ~7s later the outcome pulse,
+        and for Night Aspect the clear counter (_check_night_aspect_backup) - and without this a
+        win would double-increment win_count. Re-armed on Expedition
         entry in poll_loop."""
         if self._win_handled_this_run:
             return
@@ -2539,6 +2596,10 @@ class NightreignContext(CommonContext):
             })
             await self.check_locations([bonus_id for bonus_id, _name in bonus_sent])
 
+        # If the Defeat location was already collected server-side, check_locations() sends
+        # nothing and no RoomUpdate comes back to trigger this - so check the goal here too.
+        await self._maybe_declare_goal()
+
     def print_status(self) -> None:
         """Prints the current live readings from the memory reader, for debugging.
         """
@@ -2552,8 +2613,11 @@ class NightreignContext(CommonContext):
         boss_desc = boss.name or boss.message or boss.status
         logger.info(
             "Nightreign status: character=%s  boss_id=%s (%s)  in_hub=%s  outcome_pulse=%s  "
+            "day_phase=%s  buff_picks=%s  weapon_pickups=%s  night_aspect_clears=%s  "
             "death_link=%s  run_state=%s",
-            character, boss.raw, boss_desc, in_hub, pulse, self.death_link_mode, self.run_state_path
+            character, boss.raw, boss_desc, in_hub, pulse, self.reader.read_day_phase(),
+            self.reader.read_buff_pick_count(), self.reader.read_weapon_pickup_count(),
+            self.reader.read_night_aspect_clear_count(), self.death_link_mode, self.run_state_path
         )
 
 

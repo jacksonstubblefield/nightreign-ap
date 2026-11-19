@@ -2,7 +2,7 @@ import unittest
 
 from worlds.nightreign.game_data import (DAY_PHASE_DAY_1, DAY_PHASE_DAY_2, DAY_PHASE_DAY_3,
                                          DAY_PHASE_NIGHT_1, DAY_PHASE_NIGHT_2,
-                                         is_nightlord_kill_tick)
+                                         is_night_aspect_clear, is_nightlord_kill_tick)
 
 
 def _kill_ticks(trace: list) -> list:
@@ -61,3 +61,24 @@ class TestNightlordKillTick(unittest.TestCase):
         self.assertFalse(is_nightlord_kill_tick(7, None, DAY_PHASE_DAY_3))
         self.assertFalse(is_nightlord_kill_tick(7, 8, None))
         self.assertFalse(is_nightlord_kill_tick(8, 8, DAY_PHASE_DAY_3))
+
+
+class TestNightAspectClearBackup(unittest.TestCase):
+    def test_live_solo_kills_count(self) -> None:
+        # 2026-10-04: 0 -> 1; 2026-10-14 (same save): 1 -> 2.
+        self.assertTrue(is_night_aspect_clear(0, 1))
+        self.assertTrue(is_night_aspect_clear(1, 2))
+
+    def test_unchanged_counter_is_not_a_win(self) -> None:
+        self.assertFalse(is_night_aspect_clear(2, 2))
+
+    def test_only_a_single_step_counts(self) -> None:
+        self.assertFalse(is_night_aspect_clear(2, 4))
+        self.assertFalse(is_night_aspect_clear(2, 1))
+
+    def test_byte_wraparound_counts_as_one(self) -> None:
+        self.assertTrue(is_night_aspect_clear(255, 0))
+
+    def test_unreadable_values_never_count(self) -> None:
+        self.assertFalse(is_night_aspect_clear(None, 1))
+        self.assertFalse(is_night_aspect_clear(0, None))

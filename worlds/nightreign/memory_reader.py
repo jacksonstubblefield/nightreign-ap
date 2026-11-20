@@ -188,22 +188,23 @@ WEAPON_PICKUP_COUNTER_OFFSET = 0x0194
 BUFF_PICK_COUNTER_OFFSET = 0x0604
 
 # GameDataMan-relative byte: backup Night Aspect win signal (see game_data.is_night_aspect_clear).
-# Save-persistent (survives the lobby and restarts), +1 at each Night Aspect kill, ~10s after it:
-# 0->1 on the 2026-10-04 solo run and 1->2 on the 2026-10-14 solo run on the same save. Added after
-# a co-op host's log (2026-11-09) showed BUFF_PICK_COUNTER_OFFSET reading 0 for the WHOLE of four
-# runs, so neither the buff-pick kill tick nor the outcome pulse fired for their Night Aspect win.
-# NOT yet checked against a Night Aspect loss.
+# A wins counter: +1 at each Night Aspect kill (~10s after it), kept through the lobby but not across
+# a game restart (read 0 again on 2026-11-19 on a save with earlier Night Aspect wins). Live-checked
+# 2026-11-19, solo: Night Aspect win 0->1, then a Night Aspect wipe left it at 1. Added after a co-op
+# host's log (2026-11-09) showed BUFF_PICK_COUNTER_OFFSET reading 0 for the WHOLE of four runs, so
+# neither the buff-pick kill tick nor the outcome pulse fired for their Night Aspect win.
 NIGHT_ASPECT_CLEAR_COUNTER_OFFSET = 0x0184
 
-# GameDataMan-relative bytes logged on every change while in the Nightlord arena, diagnostics only.
-# Each one changed at (or ~10s after) both solo Night Aspect kills (2026-10-04, 2026-10-14) but has
-# no normal-win or loss control yet, so none is a trigger. A failed-win report's log shows how each
-# one behaved, which is the data needed to promote one to a trigger.
+# GameDataMan-relative bytes logged on every change while in the Nightlord arena, diagnostics only,
+# so a failed-win report's log shows how each behaved. Night Aspect win vs. wipe, live 2026-11-19:
 #   +0xDF  7 during the run, 0xFF in the hub (current target's roster index?)
-#   +0xE9  0->1 at run start, 1->0 at the kill (expedition active?)
-#   +0x16C/+0x170/+0x174  +1 at the kill (Oct 14 only)
-#   +0x373 0->6 (Oct 4) / 0->4 (Oct 14) at the kill, 0 again in the lobby (outcome code?)
-#   +0x53C 0xFF->7 at the kill, persists in the lobby (cleared target's roster index?)
+#   +0xE9  1->0 on both (expedition active?) - not a win signal
+#   +0x16C +1 on both (expeditions finished?) - not a win signal
+#   +0x170 win +1, wipe unchanged (wins counter, like +0x184) - verified alternative trigger
+#   +0x174 win +1, wipe reset to 0 (win streak?)
+#   +0x373 win 0->7, wipe 0->5 (also 6 and 4 on earlier wins) - not an outcome code
+#   +0x53C win 0xFF->7, wipe 7->0xFF (cleared target's roster index, 0xFF = none) - verified
+#          alternative trigger
 ARENA_CANDIDATE_OFFSETS = (0x00DF, 0x00E9, 0x016C, 0x0170, 0x0174,
                            NIGHT_ASPECT_CLEAR_COUNTER_OFFSET, 0x0373, 0x053C)
 

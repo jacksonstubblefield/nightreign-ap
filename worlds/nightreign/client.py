@@ -56,7 +56,7 @@ have no in-game effect - the base CommonContext/CLI/GUI machinery just logs
 them, same as before any was added. Wins are detected via _trigger_win (at most once per
 Expedition) from three signals: primarily the buff-pick counter ticking in the Day 3 Nightlord arena
 (game_data.is_nightlord_kill_tick), with read_outcome_pulse()'s rising edge as a fallback. Night
-Aspect never fires the pulse, so its fallback is the save-persistent clear counter
+Aspect never fires the pulse, so its fallback is the GameDataMan wins counter
 (game_data.is_night_aspect_clear). When win_count_checks is on, every detected win
 with a resolved boss_id increments a per-seed win counter persisted in the run state file (_open_run_state/
 _write_run_state), and crossing one of this slot's win_count_thresholds (from slot_data - see
@@ -2601,17 +2601,19 @@ class NightreignContext(CommonContext):
         await self._maybe_declare_goal()
 
     def print_status(self) -> None:
-        """Prints the current live readings from the memory reader, for debugging.
-        """
+        """Prints the current live readings from the memory reader, for debugging. Logged via
+        "Client", not this module's logger, so it shows in the GUI's Archipelago tab (see
+        NightreignManager.logging_pairs) instead of only the console/log file."""
+        output = logging.getLogger("Client")
         if not self.reader.connected:
-            logger.info("Nightreign: not connected to the game process.")
+            output.info("Nightreign: not connected to the game process.")
             return
         character = self.reader.read_character_class_name()
         boss = self.reader.read_boss_id()
         in_hub = self.reader.read_hub_state()
         pulse = self.reader.read_outcome_pulse()
         boss_desc = boss.name or boss.message or boss.status
-        logger.info(
+        output.info(
             "Nightreign status: character=%s  boss_id=%s (%s)  in_hub=%s  outcome_pulse=%s  "
             "day_phase=%s  buff_picks=%s  weapon_pickups=%s  night_aspect_clears=%s  "
             "death_link=%s  run_state=%s",

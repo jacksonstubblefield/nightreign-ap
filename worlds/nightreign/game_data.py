@@ -300,9 +300,9 @@ def is_nightlord_kill_tick(
 
 
 def is_night_aspect_clear(baseline: Optional[int], current: Optional[int]) -> bool:
-    """Backup Night Aspect win signal: True when memory_reader's save-persistent Night Aspect clear
-    counter (NIGHT_ASPECT_CLEAR_COUNTER_OFFSET) is exactly one above its value at Nightlord-arena
-    entry. Only consulted when the arena's boss is Night Aspect, which has no outcome pulse, so this
+    """Backup Night Aspect win signal: True when memory_reader's wins counter
+    (NIGHT_ASPECT_CLEAR_COUNTER_OFFSET) is exactly one above its value at Nightlord-arena entry.
+    Live-checked 2026-11-19: +1 on a Night Aspect win, unchanged on a Night Aspect wipe. Only consulted when the arena's boss is Night Aspect, which has no outcome pulse, so this
     covers setups where the buff-pick counter never moves (a 2026-11-09 co-op host's log read it as
     0 all run). A single byte read, so 255->0 counts as +1. baseline is None when the arena entry
     reading failed, which never counts."""
